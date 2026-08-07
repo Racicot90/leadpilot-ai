@@ -59,7 +59,10 @@ def init_db():
                 service TEXT,
                 urgency TEXT,
                 message TEXT,
-                status TEXT DEFAULT 'New'
+                status TEXT DEFAULT 'New',
+                lead_score INTEGER DEFAULT 0,
+                qualification TEXT DEFAULT 'Standard',
+                recommended_action TEXT
             )
         """)
         execute(con, """
@@ -86,10 +89,29 @@ def init_db():
                 service TEXT,
                 urgency TEXT,
                 message TEXT,
-                status TEXT DEFAULT 'New'
+                status TEXT DEFAULT 'New',
+                lead_score INTEGER DEFAULT 0,
+                qualification TEXT DEFAULT 'Standard',
+                recommended_action TEXT
             )
         """)
         execute(con, "INSERT OR REPLACE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
+
+    # Safe schema upgrades for existing databases.
+    if USE_POSTGRES:
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
+    else:
+        for sql in [
+            "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
+            "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
+            "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
+        ]:
+            try:
+                execute(con, sql)
+            except Exception:
+                pass
 
     con.commit()
     con.close()
@@ -116,6 +138,66 @@ def classify(text):
         urgency = "Normal"
 
     return service, urgency
+
+def qualify_lead(name, phone, email, zip_code, service, urgency, message):
+    """LeadPilot Qualification V1: fast, explainable scoring from 0-100."""
+    score = 35
+    reasons = []
+    t = (message or "").lower()
+
+    if urgency == "Emergency":
+        score += 35
+        reasons.append("emergency language")
+    elif urgency == "High":
+        score += 22
+        reasons.append("same-day / urgent need")
+    else:
+        score += 8
+
+    if phone:
+        score += 10
+        reasons.append("phone provided")
+    if email:
+        score += 5
+    if zip_code:
+        score += 5
+
+    if service in ["HVAC", "Plumbing", "Electrical", "Roofing"]:
+        score += 8
+        reasons.append("clear service category")
+
+    high_intent_terms = [
+        "today", "tomorrow", "asap", "need someone", "need it fixed",
+        "stopped working", "not working", "leaking", "no ac", "no heat",
+        "burst", "flood", "sparking", "estimate", "quote", "appointment"
+    ]
+    matches = sum(1 for term in high_intent_terms if term in t)
+    score += min(matches * 4, 16)
+
+    if len((message or "").strip()) >= 25:
+        score += 4
+
+    score = max(0, min(score, 100))
+
+    if score >= 85:
+        qualification = "Hot"
+        action = "Call immediately. This lead shows strong urgency and buying intent."
+    elif score >= 70:
+        qualification = "Strong"
+        action = "Contact within 5-10 minutes and try to book the job."
+    elif score >= 50:
+        qualification = "Qualified"
+        action = "Contact soon, confirm job details, and offer the next available appointment."
+    else:
+        qualification = "Standard"
+        action = "Follow up, confirm the scope of work, and qualify timing and budget."
+
+    return {
+        "lead_score": score,
+        "qualification": qualification,
+        "recommended_action": action,
+        "score_reasons": reasons
+    }
 
 def assistant_reply(message):
     service, urgency = classify(message)
@@ -355,6 +437,9 @@ def dashboard_html():
         email = (r["email"] or "").strip()
         status = r["status"] or "New"
         urgency = r["urgency"] or "Normal"
+        lead_score = r["lead_score"] or 0
+        qualification = r["qualification"] or "Standard"
+        recommended_action = r["recommended_action"] or "Follow up and confirm the job details."
 
         options = "".join(
             f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
@@ -368,7 +453,11 @@ def dashboard_html():
               <div class="lead-name">{r['name'] or 'Unnamed lead'}</div>
               <div class="lead-time">{r['created_at']}</div>
             </div>
-            <span class="badge urgency-{urgency.lower()}">{urgency}</span>
+            <div class="badges">
+              <span class="badge score-badge">{lead_score}/100</span>
+              <span class="badge qual-{qualification.lower()}">{qualification}</span>
+              <span class="badge urgency-{urgency.lower()}">{urgency}</span>
+            </div>
           </div>
 
           <div class="details">
@@ -379,6 +468,12 @@ def dashboard_html():
           </div>
 
           <div class="message">{r['message'] or 'No message provided.'}</div>
+
+          <div class="ai-box">
+            <div class="ai-title">LeadPilot Qualification</div>
+            <div><strong>{qualification} lead · {lead_score}/100</strong></div>
+            <div class="ai-action">{recommended_action}</div>
+          </div>
 
           <div class="actions">
             <a class="action primary" href="tel:{phone}">📞 Call</a>
@@ -421,7 +516,13 @@ h1{{font-size:28px;margin:0}}
 .lead-top{{display:flex;justify-content:space-between;gap:12px}}
 .lead-name{{font-size:21px;font-weight:800}}
 .lead-time{{font-size:12px;color:#667085;margin-top:5px}}
+.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
 .badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
+.score-badge{{background:#172033;color:#fff}}
+.qual-hot{{background:#dcfae6;color:#05603a}}
+.qual-strong{{background:#e0e7ff;color:#3730a3}}
+.qual-qualified{{background:#eaf2ff;color:#175cd3}}
+.qual-standard{{background:#f2f4f7;color:#344054}}
 .urgency-emergency{{background:#fee4e2;color:#b42318}}
 .urgency-high{{background:#fff0c2;color:#93370d}}
 .details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:16px 0}}
@@ -429,6 +530,9 @@ h1{{font-size:28px;margin:0}}
 .details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}}
 .details strong{{font-size:14px;word-break:break-word}}
 .message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}}
+.ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
+.ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}}
+.ai-action{{font-size:13px;color:#475467;margin-top:4px;line-height:1.35}}
 .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
 .action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
 .action.primary{{background:#172033;color:#fff;border-color:#172033}}
@@ -622,12 +726,22 @@ class Handler(BaseHTTPRequestHandler):
                 con = db()
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
+                qualification = qualify_lead(
+                    data.get("name"),
+                    data.get("phone"),
+                    data.get("email"),
+                    data.get("zip"),
+                    data.get("service") or "General Repair",
+                    data.get("urgency") or "Normal",
+                    data.get("message") or ""
+                )
+
                 if USE_POSTGRES:
                     cur = execute(
                         con,
                         """INSERT INTO leads
-                        (business_id,created_at,name,phone,email,zip,service,urgency,message,status)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
+                        (business_id,created_at,name,phone,email,zip,service,urgency,message,status,lead_score,qualification,recommended_action)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                         RETURNING id""",
                         (
                             BUSINESS_ID,
@@ -639,7 +753,10 @@ class Handler(BaseHTTPRequestHandler):
                             data.get("service"),
                             data.get("urgency"),
                             data.get("message"),
-                            "New"
+                            "New",
+                            qualification["lead_score"],
+                            qualification["qualification"],
+                            qualification["recommended_action"]
                         )
                     )
 
@@ -649,8 +766,8 @@ class Handler(BaseHTTPRequestHandler):
                     cur = execute(
                         con,
                         """INSERT INTO leads
-                        (business_id,created_at,name,phone,email,zip,service,urgency,message,status)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        (business_id,created_at,name,phone,email,zip,service,urgency,message,status,lead_score,qualification,recommended_action)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             BUSINESS_ID,
                             now,
@@ -661,7 +778,10 @@ class Handler(BaseHTTPRequestHandler):
                             data.get("service"),
                             data.get("urgency"),
                             data.get("message"),
-                            "New"
+                            "New",
+                            qualification["lead_score"],
+                            qualification["qualification"],
+                            qualification["recommended_action"]
                         )
                     )
 
@@ -671,7 +791,12 @@ class Handler(BaseHTTPRequestHandler):
                 con.close()
 
                 self.send_bytes(
-                    json.dumps({"ok": True, "id": lead_id}).encode(),
+                    json.dumps({
+                        "ok": True,
+                        "id": lead_id,
+                        "lead_score": qualification["lead_score"],
+                        "qualification": qualification["qualification"]
+                    }).encode(),
                     content_type="application/json"
                 )
 
