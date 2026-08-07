@@ -136,7 +136,15 @@ async function sendChat(){
  const j=await r.json(); add(j.reply,'bot'); document.getElementById('service').value=j.service; document.getElementById('urgency').value=j.urgency;
 }
 async function submitLead(){
- const data={name:document.getElementById('name').value,phone:document.getElementById('phone').value,email:document.getElementById('email').value,zip:document.getElementById('zip').value,service:document.getElementById('service').value||'General Repair',urgency:document.getElementById('urgency').value||'Normal',message:document.getElementById('details').value};
+ const data={
+   name:document.getElementById('name').value,
+   phone:document.getElementById('phone').value,
+   email:document.getElementById('email').value,
+   zip:document.getElementById('zip').value,
+   service:document.getElementById('service').value||'General Repair',
+   urgency:document.getElementById('urgency').value||'Normal',
+   message:document.getElementById('details').value
+ };
  if(!data.name || !data.phone){ result.textContent='Please enter at least your name and phone number.'; return; }
  const r=await fetch('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  const j=await r.json(); result.className='success'; result.textContent='Request received! Lead #'+j.id+' has been created.';
@@ -149,22 +157,137 @@ def dashboard_html():
     con = db()
     rows = con.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
     con.close()
-    body = ""
+
+    counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
     for r in rows:
-        body += f"""<tr>
-<td>{r['id']}</td><td>{r['created_at']}</td><td>{r['name'] or ''}</td>
-<td>{r['phone'] or ''}</td><td>{r['service'] or ''}</td><td>{r['urgency'] or ''}</td>
-<td>{r['status'] or ''}</td><td>{r['message'] or ''}</td></tr>"""
-    if not body:
-        body = "<tr><td colspan='8'>No leads yet. Submit a test lead from the customer page.</td></tr>"
-    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LeadPilot Dashboard</title><style>
-body{{font-family:Arial;margin:0;background:#f4f7fb;color:#172033}}.wrap{{padding:20px;overflow:auto}}
-table{{border-collapse:collapse;width:100%;background:white}}th,td{{padding:10px;border:1px solid #ddd;text-align:left;white-space:nowrap}}
-a{{color:#3448c5}}</style></head><body><div class="wrap">
-<h1>{BUSINESS_NAME} — Lead Dashboard</h1><p><a href="/">← Customer page</a></p>
-<table><tr><th>ID</th><th>Created</th><th>Name</th><th>Phone</th><th>Service</th><th>Urgency</th><th>Status</th><th>Message</th></tr>
-{body}</table></div></body></html>"""
+        counts[r["status"] or "New"] = counts.get(r["status"] or "New", 0) + 1
+
+    cards = ""
+    for r in rows:
+        phone = (r["phone"] or "").strip()
+        email = (r["email"] or "").strip()
+        status = r["status"] or "New"
+        urgency = r["urgency"] or "Normal"
+        options = "".join(
+            f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
+            for s in ["New","Contacted","Booked","Closed"]
+        )
+        cards += f"""
+        <section class="lead-card">
+          <div class="lead-top">
+            <div>
+              <div class="lead-name">{r['name'] or 'Unnamed lead'}</div>
+              <div class="lead-time">{r['created_at']}</div>
+            </div>
+            <span class="badge urgency-{urgency.lower()}">{urgency}</span>
+          </div>
+
+          <div class="details">
+            <div><span>Service</span><strong>{r['service'] or 'General Repair'}</strong></div>
+            <div><span>ZIP</span><strong>{r['zip'] or '—'}</strong></div>
+            <div><span>Phone</span><strong>{phone or '—'}</strong></div>
+            <div><span>Email</span><strong>{email or '—'}</strong></div>
+          </div>
+
+          <div class="message">{r['message'] or 'No message provided.'}</div>
+
+          <div class="actions">
+            <a class="action primary" href="tel:{phone}">📞 Call</a>
+            <a class="action" href="sms:{phone}">💬 Text</a>
+            <a class="action" href="mailto:{email}">✉️ Email</a>
+          </div>
+
+          <div class="status-row">
+            <label for="status-{r['id']}">Lead status</label>
+            <select id="status-{r['id']}" onchange="updateStatus({r['id']}, this.value)">
+              {options}
+            </select>
+            <span id="saved-{r['id']}" class="saved"></span>
+          </div>
+        </section>
+        """
+
+    if not cards:
+        cards = '<div class="empty">No leads yet. New customer requests will appear here.</div>'
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot Dashboard</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:980px;margin:auto;padding:20px}}
+header{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}}
+h1{{font-size:28px;margin:0}} .sub{{color:#667085;margin-top:5px}}
+.back{{text-decoration:none;color:#3448c5;font-weight:700}}
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}}
+.stat{{background:#fff;padding:16px;border-radius:14px;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
+.stat b{{display:block;font-size:27px;margin-top:5px}}
+.stat span{{font-size:13px;color:#667085}}
+.leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+.lead-card{{background:white;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
+.lead-top{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}}
+.lead-name{{font-size:21px;font-weight:800}} .lead-time{{font-size:12px;color:#667085;margin-top:5px}}
+.badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
+.urgency-emergency{{background:#fee4e2;color:#b42318}} .urgency-high{{background:#fff0c2;color:#93370d}}
+.details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:16px 0}}
+.details div{{background:#f8fafc;padding:10px;border-radius:10px;overflow:hidden}}
+.details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}}
+.details strong{{font-size:14px;word-break:break-word}}
+.message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}}
+.actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
+.action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
+.action.primary{{background:#172033;color:#fff;border-color:#172033}}
+.status-row{{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:9px;border-top:1px solid #eaecf0;padding-top:14px}}
+.status-row label{{font-size:13px;font-weight:700}}
+select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;background:white}}
+.saved{{grid-column:1/-1;color:#067647;font-size:12px;min-height:14px}}
+.empty{{background:white;padding:25px;border-radius:16px}}
+@media(max-width:700px){{
+ .wrap{{padding:14px}} header{{display:block}} .back{{display:inline-block;margin-top:10px}}
+ .stats{{grid-template-columns:1fr 1fr}} .leads{{grid-template-columns:1fr}}
+ h1{{font-size:25px}}
+}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div><h1>LeadPilot AI — Lead Dashboard</h1><div class="sub">{BUSINESS_NAME}</div></div>
+  <a class="back" href="/">← Customer page</a>
+</header>
+
+<div class="stats">
+  <div class="stat"><span>New Leads</span><b>{counts.get('New',0)}</b></div>
+  <div class="stat"><span>Contacted</span><b>{counts.get('Contacted',0)}</b></div>
+  <div class="stat"><span>Booked</span><b>{counts.get('Booked',0)}</b></div>
+  <div class="stat"><span>Closed</span><b>{counts.get('Closed',0)}</b></div>
+</div>
+
+<div class="leads">{cards}</div>
+</div>
+
+<script>
+async function updateStatus(id, status) {{
+  const saved = document.getElementById('saved-' + id);
+  saved.textContent = 'Saving...';
+  const r = await fetch('/api/leads/' + id + '/status', {{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{status}})
+  }});
+  if (r.ok) {{
+    saved.textContent = '✓ Saved';
+    setTimeout(() => location.reload(), 500);
+  }} else {{
+    saved.textContent = 'Could not save';
+  }}
+}}
+</script>
+</body>
+</html>"""
 
 class Handler(BaseHTTPRequestHandler):
     def send_bytes(self, data, status=200, content_type="text/html; charset=utf-8"):
@@ -193,10 +316,12 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         try:
             data = self.read_json()
+
             if p == "/api/chat":
                 out = assistant_reply(data.get("message",""))
                 self.send_bytes(json.dumps(out).encode(), content_type="application/json")
                 return
+
             if p == "/api/leads":
                 con = db()
                 cur = con.execute("""INSERT INTO leads(created_at,name,phone,email,zip,service,urgency,message,status)
@@ -204,10 +329,35 @@ class Handler(BaseHTTPRequestHandler):
                     (datetime.now().strftime("%Y-%m-%d %H:%M"),data.get("name"),data.get("phone"),
                      data.get("email"),data.get("zip"),data.get("service"),data.get("urgency"),
                      data.get("message"),"New"))
-                con.commit(); lead_id = cur.lastrowid; con.close()
+                con.commit()
+                lead_id = cur.lastrowid
+                con.close()
                 self.send_bytes(json.dumps({"ok":True,"id":lead_id}).encode(), content_type="application/json")
                 return
+
+            if p.startswith("/api/leads/") and p.endswith("/status"):
+                parts = p.strip("/").split("/")
+                lead_id = int(parts[2])
+                status = data.get("status","")
+                if status not in ["New","Contacted","Booked","Closed"]:
+                    self.send_bytes(b'{"error":"bad status"}',400,"application/json")
+                    return
+
+                con = db()
+                cur = con.execute("UPDATE leads SET status=? WHERE id=?", (status, lead_id))
+                con.commit()
+                changed = cur.rowcount
+                con.close()
+
+                if not changed:
+                    self.send_bytes(b'{"error":"lead not found"}',404,"application/json")
+                    return
+
+                self.send_bytes(json.dumps({"ok":True,"id":lead_id,"status":status}).encode(), content_type="application/json")
+                return
+
             self.send_bytes(b'{"error":"not found"}',404,"application/json")
+
         except Exception as e:
             self.send_bytes(json.dumps({"error":str(e)}).encode(),500,"application/json")
 
@@ -216,5 +366,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    print(f"LeadPilot AI V1 single-file running on http://{HOST}:{PORT}")
+    print(f"LeadPilot AI V1 dashboard upgrade running on http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
