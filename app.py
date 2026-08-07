@@ -136,7 +136,7 @@ async function sendChat(){
  const j=await r.json(); add(j.reply,'bot'); document.getElementById('service').value=j.service; document.getElementById('urgency').value=j.urgency;
 }
 async function submitLead(){
- const data={name:name.value,phone:phone.value,email:email.value,zip:zip.value,service:service.value||'General Repair',urgency:urgency.value||'Normal',message:details.value};
+ const data={name:document.getElementById('name').value,phone:document.getElementById('phone').value,email:document.getElementById('email').value,zip:document.getElementById('zip').value,service:document.getElementById('service').value||'General Repair',urgency:document.getElementById('urgency').value||'Normal',message:document.getElementById('details').value};
  if(!data.name || !data.phone){ result.textContent='Please enter at least your name and phone number.'; return; }
  const r=await fetch('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  const j=await r.json(); result.className='success'; result.textContent='Request received! Lead #'+j.id+' has been created.';
