@@ -119,7 +119,7 @@ def init_db():
 def classify(text):
     t = text.lower()
 
-    if any(x in t for x in ["ac ", "a/c", "air condition", "hvac", "heat", "furnace"]):
+    if any(x in t for x in ["ac ", "ac.", "my ac", "a/c", "air condition", "hvac", "heat", "furnace"]):
         service = "HVAC"
     elif any(x in t for x in ["pipe", "plumb", "toilet", "sink", "drain", "water leak"]):
         service = "Plumbing"
@@ -726,14 +726,23 @@ class Handler(BaseHTTPRequestHandler):
                 con = db()
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
+                # Always classify on the server from the customer's actual message.
+                # This prevents blank/default form fields from turning an HVAC,
+                # plumbing, electrical, or roofing lead into "General Repair".
+                message = data.get("message") or ""
+                detected_service, detected_urgency = classify(message)
+
+                service = detected_service
+                urgency = detected_urgency
+
                 qualification = qualify_lead(
                     data.get("name"),
                     data.get("phone"),
                     data.get("email"),
                     data.get("zip"),
-                    data.get("service") or "General Repair",
-                    data.get("urgency") or "Normal",
-                    data.get("message") or ""
+                    service,
+                    urgency,
+                    message
                 )
 
                 if USE_POSTGRES:
@@ -750,9 +759,9 @@ class Handler(BaseHTTPRequestHandler):
                             data.get("phone"),
                             data.get("email"),
                             data.get("zip"),
-                            data.get("service"),
-                            data.get("urgency"),
-                            data.get("message"),
+                            service,
+                            urgency,
+                            message,
                             "New",
                             qualification["lead_score"],
                             qualification["qualification"],
@@ -775,9 +784,9 @@ class Handler(BaseHTTPRequestHandler):
                             data.get("phone"),
                             data.get("email"),
                             data.get("zip"),
-                            data.get("service"),
-                            data.get("urgency"),
-                            data.get("message"),
+                            service,
+                            urgency,
+                            message,
                             "New",
                             qualification["lead_score"],
                             qualification["qualification"],
@@ -795,7 +804,9 @@ class Handler(BaseHTTPRequestHandler):
                         "ok": True,
                         "id": lead_id,
                         "lead_score": qualification["lead_score"],
-                        "qualification": qualification["qualification"]
+                        "qualification": qualification["qualification"],
+                        "service": service,
+                        "urgency": urgency
                     }).encode(),
                     content_type="application/json"
                 )
