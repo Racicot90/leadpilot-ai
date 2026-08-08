@@ -1279,22 +1279,22 @@ async function updateStatus(id,status){{
    body:JSON.stringify({{status}})
  }});
 
- if(r.ok){
+ if(r.ok){{
   const row=s.closest('.status-row');
   const buttons=row.querySelectorAll('.status-btn');
 
-  buttons.forEach(btn=>{
+  buttons.forEach(btn=>{{
     btn.classList.toggle(
       'active',
       btn.textContent.trim() === status
     );
-  });
+  }});
 
   s.textContent='✓ '+status;
   setTimeout(()=>location.reload(),900);
-}else{
+}}else{{
   s.textContent='Could not save';
-    }
+    }}
 }}
 </script>
 
