@@ -142,7 +142,8 @@ def init_db():
                 email TEXT DEFAULT '',
                 website TEXT DEFAULT '',
                 status TEXT DEFAULT 'Prospect',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                business_id INTEGER DEFAULT 0
             )
         """)
         execute(con, """
@@ -233,7 +234,8 @@ def init_db():
                 email TEXT DEFAULT '',
                 website TEXT DEFAULT '',
                 status TEXT DEFAULT 'Prospect',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                business_id INTEGER DEFAULT 0
             )
         """)
         execute(con, "INSERT OR IGNORE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
@@ -274,6 +276,7 @@ def init_db():
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS chase_30_sent INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS city TEXT DEFAULT ''")
         execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS county TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE provider_prospects ADD COLUMN IF NOT EXISTS business_id INTEGER DEFAULT 0")
     else:
         for sql in [
             "ALTER TABLE businesses ADD COLUMN services TEXT DEFAULT ''",
@@ -559,7 +562,7 @@ def list_businesses():
     return enriched
 
 
-def create_business(name, services="", service_area="", email="", alert_phone=""):
+def create_business(name, services="", service_area="", email="", alert_phone="", routing_enabled=1, verification_status="Pending", test_business=0):
     con = db()
     if USE_POSTGRES:
         new_id = execute(con, "SELECT COALESCE(MAX(id),0)+1 AS next_id FROM businesses").fetchone()["next_id"]
@@ -577,7 +580,9 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
             (service_area or "").strip(),
             (email or "").strip(),
             (alert_phone or "").strip(),
-            1, 0, 0, "", "", "Pending", 0
+            1 if routing_enabled else 0, 0, 0, "", "",
+            verification_status if verification_status in ("Pending","Verified","Rejected","Expired") else "Pending",
+            1 if test_business else 0
         )
     )
     con.commit()
@@ -1156,9 +1161,21 @@ def coverage_demand_html():
         heat = "hot" if g["count"] >= 10 else ("warm" if g["count"] >= 5 else "normal")
         label = "🔥 Recruit now" if g["count"] >= 10 else ("Growing demand" if g["count"] >= 5 else "Demand detected")
         detail = g["county"] or g["city"] or g["area"]
+        # Carry normalized geography into the recruiting form.
+        sample = next(
+            (
+                r for r in rows
+                if (r["status"] or "Waiting").strip() == "Waiting"
+                and (r["service"] or "General Repair").strip() == g["service"]
+                and ((r["county"] or r["city"] or r["location"] or "Unknown area").strip() == g["area"])
+            ),
+            None
+        )
         recruit_url = (
             "/recruiting?service=" + quote(g["service"]) +
-            "&city=" + quote(g["city"] or g["area"]) +
+            "&city=" + quote((sample["city"] if sample else g["city"]) or "") +
+            "&county=" + quote((sample["county"] if sample else g["county"]) or "") +
+            "&zip=" + quote((sample["zip"] if sample else "") or "") +
             "&count=" + str(g["count"])
         )
         demand_cards += f"""<div class="demand-card {heat}">
@@ -1186,7 +1203,7 @@ def coverage_demand_html():
 
 
 
-PROSPECT_STATUSES = ["Prospect", "Contacted", "Interested", "Verification", "Approved", "Live", "Passed"]
+PROSPECT_STATUSES = ["Prospect", "Contacted", "Interested", "Verification", "Approved", "Passed"]
 
 
 def create_provider_prospect(business_name, service, city="", county="", zip_code="",
@@ -1233,9 +1250,100 @@ def create_provider_prospect(business_name, service, city="", county="", zip_cod
     return prospect_id
 
 
+def _service_area_from_prospect(prospect):
+    parts = []
+    for value in [
+        prospect["city"] if "city" in prospect.keys() else "",
+        prospect["county"] if "county" in prospect.keys() else "",
+        prospect["zip"] if "zip" in prospect.keys() else ""
+    ]:
+        value = (value or "").strip()
+        if value and value.lower() not in [x.lower() for x in parts]:
+            parts.append(value)
+    return ", ".join(parts)
+
+
+def ensure_prospect_business(prospect_id):
+    """Create a real, blocked business record when recruiting reaches Verification."""
+    con = db()
+    prospect = execute(
+        con, "SELECT * FROM provider_prospects WHERE id=?", (prospect_id,)
+    ).fetchone()
+    con.close()
+    if not prospect:
+        return 0
+
+    existing_id = int(prospect["business_id"] or 0) if "business_id" in prospect.keys() else 0
+    if existing_id:
+        return existing_id
+
+    service_area = _service_area_from_prospect(prospect)
+    business_id = create_business(
+        prospect["business_name"],
+        services=prospect["service"],
+        service_area=service_area,
+        email=prospect["email"] or "",
+        alert_phone=prospect["phone"] or "",
+        routing_enabled=0,
+        verification_status="Pending",
+        test_business=0
+    )
+
+    con = db()
+    execute(
+        con,
+        "UPDATE provider_prospects SET business_id=?, updated_at=? WHERE id=?",
+        (business_id, datetime.utcnow().strftime("%Y-%m-%d %H:%M"), prospect_id)
+    )
+    con.commit()
+    con.close()
+    return business_id
+
+
+def provider_verification_ready(business):
+    """Strict beta gate before a recruited provider can be activated."""
+    if not business:
+        return False, ["Missing business record"]
+
+    missing = []
+    if effective_verification_status(business) != "Verified":
+        missing.append("Verification status must be Verified")
+
+    checks = [
+        ("identity_verified", "Business identity"),
+        ("license_verified", "Trade license"),
+        ("license_active_verified", "Active license"),
+        ("insurance_verified", "Insurance"),
+        ("registration_verified", "Business registration"),
+        ("terms_accepted", "Provider terms"),
+    ]
+    for key, label in checks:
+        if int(business.get(key) or 0) != 1:
+            missing.append(label)
+
+    if not (business.get("insurance_expiration") or "").strip():
+        missing.append("Insurance expiration date")
+
+    return len(missing) == 0, missing
+
+
 def update_provider_prospect_status(prospect_id, status):
     if status not in PROSPECT_STATUSES:
         return False
+
+    # Reaching Verification automatically creates a real business record,
+    # but routing stays OFF until activation.
+    if status == "Verification":
+        ensure_prospect_business(prospect_id)
+
+    # Approved cannot be used to bypass verification.
+    if status == "Approved":
+        business_id = ensure_prospect_business(prospect_id)
+        business = get_business_settings(business_id) if business_id else None
+        ready, _missing = provider_verification_ready(business)
+        if not ready:
+            return False
+
     con = db()
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     cur = execute(
@@ -1249,7 +1357,35 @@ def update_provider_prospect_status(prospect_id, status):
     return bool(changed)
 
 
-def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=""):
+def activate_provider_prospect(prospect_id):
+    """Final activation: verified prospect becomes a live routable business."""
+    business_id = ensure_prospect_business(prospect_id)
+    if not business_id:
+        return False, "Could not create the linked business."
+
+    business = get_business_settings(business_id)
+    ready, missing = provider_verification_ready(business)
+    if not ready:
+        return False, "Still needed: " + ", ".join(missing)
+
+    con = db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    execute(
+        con,
+        "UPDATE businesses SET routing_enabled=1, verification_status='Verified' WHERE id=?",
+        (business_id,)
+    )
+    execute(
+        con,
+        "UPDATE provider_prospects SET status='Live', updated_at=? WHERE id=?",
+        (now, prospect_id)
+    )
+    con.commit()
+    con.close()
+    return True, business_id
+
+
+def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count="", prefill_county="", prefill_zip="", message=""):
     con = db()
     rows = execute(
         con,
@@ -1257,7 +1393,7 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
     ).fetchall()
     con.close()
 
-    counts = {s: 0 for s in PROSPECT_STATUSES}
+    counts = {s: 0 for s in PROSPECT_STATUSES + ["Live"]}
     for r in rows:
         status = (r["status"] or "Prospect").strip()
         counts[status] = counts.get(status, 0) + 1
@@ -1279,6 +1415,33 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
             (r["email"] or "").strip()
         ] if x]
         contact = " · ".join(contact_parts) or "No contact details yet"
+
+        business_id = int(r["business_id"] or 0) if "business_id" in r.keys() else 0
+        verification_panel = ""
+        activation_panel = ""
+
+        if business_id:
+            linked_business = get_business_settings(business_id)
+            ready, missing = provider_verification_ready(linked_business)
+            effective_status = effective_verification_status(linked_business)
+            verification_panel = f"""
+              <div class="verification-box">
+                <strong>Linked LeadPilot business #{business_id}</strong>
+                <span>Verification: {html.escape(effective_status)}</span>
+                <span>Routing: {"Enabled" if linked_business.get("routing_enabled") else "Blocked until activation"}</span>
+                <a href="/settings?business={business_id}">Open verification settings →</a>
+              </div>
+            """
+            if ready and status != "Live":
+                activation_panel = f"""
+                  <form method="POST" action="/recruiting/activate">
+                    <input type="hidden" name="prospect_id" value="{r['id']}">
+                    <button class="activate-btn" type="submit">✓ Activate Provider</button>
+                  </form>
+                """
+            elif status != "Live":
+                activation_panel = '<div class="not-ready">Activation locked — finish verification first.</div>'
+
         cards += f"""
         <div class="prospect">
           <div class="prospect-top">
@@ -1291,6 +1454,9 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
           </div>
           <div class="contact">{html.escape(contact)}</div>
           {f'<div class="notes">{html.escape(r["notes"])}</div>' if r["notes"] else ''}
+          {verification_panel}
+          {activation_panel}
+          {"<div class='live-box'>✓ Live and eligible for LeadPilot routing</div>" if status == "Live" else ""}
           <form method="POST" action="/recruiting/status">
             <input type="hidden" name="prospect_id" value="{r['id']}">
             <label>Pipeline stage</label>
@@ -1339,6 +1505,13 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 .stage-passed{{background:#f2f4f7;color:#667085}}
 .contact{{margin-top:12px;font-weight:700;font-size:13px}}
 .notes{{margin-top:10px;padding:10px;background:#f8fafc;border-radius:9px;color:#475467;font-size:13px}}
+.verification-box{{margin-top:12px;padding:12px;background:#f8fafc;border-radius:10px}}
+.verification-box span{{display:block;color:#667085;font-size:12px;margin-top:4px}}
+.verification-box a{{display:inline-block;margin-top:8px;font-size:12px}}
+.activate-btn{{width:100%;margin-top:10px;background:#087443}}
+.not-ready{{margin-top:10px;padding:10px;border-radius:9px;background:#fff0c2;color:#93370d;font-size:12px;font-weight:800}}
+.live-box{{margin-top:10px;padding:10px;border-radius:9px;background:#dcfae6;color:#05603a;font-size:12px;font-weight:800}}
+.flash{{margin-bottom:14px;padding:12px;border-radius:10px;background:#e0e7ff;color:#29339b;font-weight:700}}
 .status-row{{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}}
 .empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}
 @media(max-width:700px){{
@@ -1361,6 +1534,7 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 
 <h1>Provider Recruiting</h1>
 <div class="sub">Turn unmet customer demand into a provider recruiting pipeline.</div>
+{f'<div class="flash">{html.escape(message)}</div>' if message else ''}
 
 <div class="stats">
   <div class="stat"><span>Prospects</span><strong>{counts.get('Prospect',0)}</strong></div>
@@ -1376,8 +1550,8 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 <div><label>Business name</label><input name="business_name" placeholder="Lake City Roofing Co." required></div>
 <div><label>Service</label><input name="service" value="{html.escape(prefill_service, quote=True)}" placeholder="Roofing" required></div>
 <div><label>City</label><input name="city" value="{html.escape(prefill_city, quote=True)}"></div>
-<div><label>County</label><input name="county"></div>
-<div><label>ZIP</label><input name="zip"></div>
+<div><label>County</label><input name="county" value="{html.escape(prefill_county, quote=True)}"></div>
+<div><label>ZIP</label><input name="zip" value="{html.escape(prefill_zip, quote=True)}"></div>
 <div><label>Contact name</label><input name="contact_name"></div>
 <div><label>Phone</label><input name="phone"></div>
 <div><label>Email</label><input name="email" type="email"></div>
@@ -3284,7 +3458,10 @@ class Handler(BaseHTTPRequestHandler):
                 recruiting_pipeline_html(
                     prefill_service=query.get("service", [""])[0],
                     prefill_city=query.get("city", [""])[0],
-                    prefill_count=query.get("count", [""])[0]
+                    prefill_count=query.get("count", [""])[0],
+                    prefill_county=query.get("county", [""])[0],
+                    prefill_zip=query.get("zip", [""])[0],
+                    message=query.get("message", [""])[0]
                 ).encode()
             )
 
@@ -3433,11 +3610,28 @@ class Handler(BaseHTTPRequestHandler):
                     prospect_id = int(form.get("prospect_id", "0"))
                 except Exception:
                     prospect_id = 0
-                update_provider_prospect_status(
-                    prospect_id,
-                    form.get("status", "Prospect")
-                )
-                self.redirect("/recruiting")
+                requested_status = form.get("status", "Prospect")
+                ok = update_provider_prospect_status(prospect_id, requested_status)
+                if ok:
+                    self.redirect("/recruiting?message=" + quote("Pipeline stage updated."))
+                else:
+                    self.redirect("/recruiting?message=" + quote("That stage is locked until required verification is complete."))
+                return
+
+            if p == "/recruiting/activate":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                form = self.read_form()
+                try:
+                    prospect_id = int(form.get("prospect_id", "0"))
+                except Exception:
+                    prospect_id = 0
+                ok, result = activate_provider_prospect(prospect_id)
+                if ok:
+                    self.redirect("/recruiting?message=" + quote("Provider activated and is now eligible for routing."))
+                else:
+                    self.redirect("/recruiting?message=" + quote(str(result)))
                 return
 
             if p == "/settings":
