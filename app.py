@@ -648,7 +648,7 @@ def assistant_reply(message, context=None):
 
 
 def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification):
-    """Send a concise SMS alert for Hot leads. Failures never block lead creation."""
+    """Send a detailed SMS alert for Hot leads. Failures never block lead creation."""
     if qualification.get("qualification") != "Hot":
         return False
 
@@ -664,9 +664,28 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
         print("SMS skipped: Twilio environment variables are incomplete.", flush=True)
         return False
 
-    # Twilio trial accounts do not allow custom SMS bodies.
-    # They require one of Twilio's predefined template names.
-    body = "sms_internal_alerts"
+    score = qualification.get("lead_score", 0)
+    action = qualification.get(
+        "recommended_action",
+        "Call the customer as soon as possible."
+    )
+
+    customer_name = (name or "Not provided").strip()
+    customer_phone = (phone or "Not provided").strip()
+    service_name = (service or "General Repair").strip()
+    urgency_name = (urgency or "Normal").strip()
+    issue = " ".join((message or "").split()).strip()
+    if len(issue) > 180:
+        issue = issue[:177] + "..."
+
+    body = (
+        f"🔥 HOT LEAD — {score}/100\n"
+        f"{service_name} · {urgency_name} urgency\n"
+        f"Customer: {customer_name}\n"
+        f"Phone: {customer_phone}\n"
+        f"Issue: {issue or 'Not provided'}\n"
+        f"Next step: {action}"
+    )
 
     endpoint = (
         f"https://api.twilio.com/2010-04-01/Accounts/"
@@ -697,7 +716,11 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
     try:
         with urlopen(req, timeout=15) as resp:
             ok = 200 <= getattr(resp, "status", 0) < 300
-            print("Twilio SMS:", "sent" if ok else f"status {getattr(resp, 'status', '?')}", flush=True)
+            print(
+                "Twilio hot-lead SMS:",
+                "sent" if ok else f"status {getattr(resp, 'status', '?')}",
+                flush=True
+            )
             return ok
     except Exception as e:
         detail = ""
