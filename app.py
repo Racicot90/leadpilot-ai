@@ -743,18 +743,31 @@ def marketplace_reply(message, context=None):
     elif step == "email":
         if msg_lower == "skip":
             customer_email = ""
-            step = "ready"
-            reply = f"Perfect. Your {service.lower()} request is ready to send to {matched_business_name}. Tap Send Request below."
+            step = "details"
+            reply = "No problem. Briefly describe what you need fixed or done."
         else:
             parsed = _extract_email(msg)
             if not parsed:
                 reply = "That doesn't look like an email address. Try again, or type SKIP."
             else:
                 customer_email = parsed
-                step = "ready"
-                reply = f"Perfect. Your {service.lower()} request is ready to send to {matched_business_name}. Tap Send Request below."
+                step = "details"
+                reply = "Thanks. Briefly describe what you need fixed or done."
+
+    elif step == "details":
+        issue = msg
+        step = "submitted"
+        reply = (
+            f"Got it. I'm sending your {service.lower()} request to "
+            f"{matched_business_name} now."
+        )
+
+    elif step == "submitted":
+        reply = f"Your request has already been sent to {matched_business_name}."
+
     else:
-        reply = f"Your request is ready to send to {matched_business_name}."
+        reply = "Tell me briefly what you need fixed or done."
+        step = "details"
 
     return {
         "reply": reply,
@@ -768,7 +781,8 @@ def marketplace_reply(message, context=None):
         "customer_zip": customer_zip,
         "matched_business_id": matched_business_id,
         "business_name": matched_business_name,
-        "customer_location": customer_location
+        "customer_location": customer_location,
+        "submit_ready": step == "submitted"
     }
 
 
@@ -1498,11 +1512,11 @@ button{padding:12px 16px;border:0;border-radius:10px;background:#172033;color:#f
 </div>
 
 <div class="card">
-<h2>Request service</h2>
+<h2>Request summary</h2>
 <input id="name" placeholder="Name">
 <input id="phone" placeholder="Phone">
 <input id="email" placeholder="Email">
-<input id="zip" placeholder="ZIP code">
+<input id="zip" placeholder="ZIP / location">
 <input id="service" placeholder="Service type" readonly>
 <input id="urgency" placeholder="Urgency" readonly>
 <textarea id="details" rows="4" placeholder="Describe what you need"></textarea>
@@ -1530,7 +1544,8 @@ let chatContext = {
   matched_business_id: 0,
   business_name: "",
   customer_location: "",
-  marketplace_mode: __MARKETPLACE_MODE__
+  marketplace_mode: __MARKETPLACE_MODE__,
+  lead_submitted: false
 };
 
 function add(text,cls){
@@ -1548,7 +1563,6 @@ async function sendChat(){
  if(!message)return;
 
  add(message,'user');
- document.getElementById('details').value=message;
  el.value='';
 
  const r=await fetch('/api/chat',{
@@ -1589,10 +1603,17 @@ async function sendChat(){
  if(nameEl && chatContext.customer_name) nameEl.value=chatContext.customer_name;
  if(phoneEl && chatContext.customer_phone) phoneEl.value=chatContext.customer_phone;
  if(emailEl) emailEl.value=chatContext.customer_email||'';
- if(zipEl && chatContext.customer_zip) zipEl.value=chatContext.customer_zip;
+ if(zipEl){
+   zipEl.value=chatContext.customer_zip||chatContext.customer_location||'';
+ }
+
+ if(j.submit_ready && chatContext.marketplace_mode && !chatContext.lead_submitted){
+   await submitLead(true);
+ }
 }
 
-async function submitLead(){
+async function submitLead(auto=false){
+ if(chatContext.lead_submitted)return;
  const data={
    business_id: chatContext.matched_business_id || __BUSINESS_ID__,
    name:document.getElementById('name').value,
@@ -1607,7 +1628,7 @@ async function submitLead(){
  const result=document.getElementById('result');
 
  if(!data.name || !data.phone){
-   result.textContent='Please enter at least your name and phone number.';
+   result.textContent='Please complete the chat so I can collect your name and phone number.';
    return;
  }
 
@@ -1620,6 +1641,13 @@ async function submitLead(){
  const j=await r.json();
 
  if(r.ok){
+   chatContext.lead_submitted=true;
+   const sendButton=document.querySelector('button[onclick="submitLead()"]');
+   if(sendButton){
+     sendButton.disabled=true;
+     sendButton.textContent='Request Sent ✓';
+   }
+
    const businessName = chatContext.business_name || '__BUSINESS_NAME__';
    const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
    result.className='success';
@@ -1627,11 +1655,18 @@ async function submitLead(){
      `Thanks, ${firstName}. Your ${data.service.toLowerCase()} request has been sent to ${businessName}. ` +
      `They'll contact you as soon as possible.`;
 
-   add(
-     `Thanks, ${firstName}. Your request has been sent to ${businessName}. ` +
-     `They'll contact you as soon as possible.`,
-     'bot'
-   );
+   if(!auto){
+     add(
+       `Thanks, ${firstName}. Your request has been sent to ${businessName}. ` +
+       `They'll contact you as soon as possible.`,
+       'bot'
+     );
+   } else {
+     add(
+       `✓ Sent to ${businessName}. They'll contact you as soon as possible.`,
+       'bot'
+     );
+   }
 
    chatContext.intake_step='complete';
  } else {
@@ -2359,8 +2394,14 @@ class Handler(BaseHTTPRequestHandler):
                 message = data.get("message") or ""
                 detected_service, detected_urgency = classify(message)
 
-                service = detected_service
-                urgency = detected_urgency
+                supplied_service = (data.get("service") or "").strip()
+                supplied_urgency = (data.get("urgency") or "").strip()
+
+                valid_services = {"HVAC", "Plumbing", "Electrical", "Roofing", "General Repair"}
+                valid_urgencies = {"Normal", "High", "Emergency"}
+
+                service = supplied_service if supplied_service in valid_services else detected_service
+                urgency = supplied_urgency if supplied_urgency in valid_urgencies else detected_urgency
 
                 qualification = qualify_lead(
                     data.get("name"),
