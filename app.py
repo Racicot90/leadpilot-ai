@@ -22,6 +22,16 @@ TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
 BUSINESS_ID = 1
+print(
+    "Twilio config:",
+    {
+        "notify_phone": bool(NOTIFY_PHONE),
+        "from_number": bool(TWILIO_PHONE_NUMBER),
+        "account_sid": bool(TWILIO_ACCOUNT_SID),
+        "auth_token": bool(TWILIO_AUTH_TOKEN),
+    },
+    flush=True
+)
 
 USE_POSTGRES = bool(DATABASE_URL)
 
@@ -235,7 +245,7 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
         TWILIO_ACCOUNT_SID,
         TWILIO_AUTH_TOKEN
     ]):
-        print("SMS skipped: Twilio environment variables are incomplete.")
+        print("SMS skipped: Twilio environment variables are incomplete.", flush=True)
         return False
 
     preview = " ".join((message or "").split())
@@ -278,10 +288,16 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
     try:
         with urlopen(req, timeout=15) as resp:
             ok = 200 <= getattr(resp, "status", 0) < 300
-            print("Twilio SMS:", "sent" if ok else f"status {getattr(resp, 'status', '?')}")
+            print("Twilio SMS:", "sent" if ok else f"status {getattr(resp, 'status', '?')}", flush=True)
             return ok
     except Exception as e:
-        print("Twilio SMS error:", repr(e))
+        detail = ""
+        try:
+            if hasattr(e, "read"):
+                detail = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        print("Twilio SMS error:", repr(e), detail[:1000], flush=True)
         return False
 
 def make_session(username):
