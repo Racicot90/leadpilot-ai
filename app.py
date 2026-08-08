@@ -575,6 +575,11 @@ def marketplace_reply(message, context=None):
     matched_business_id = int(context.get("matched_business_id") or 0)
     matched_business_name = (context.get("business_name") or "").strip()
 
+    # Marketplace rule: never collect a name until a business has been matched.
+    # This also repairs stale browser chat state from older deployments.
+    if not matched_business_id and step in ("name", "phone", "email", "ready"):
+        step = "location" if service and service != "General Repair" else ""
+
     if not step:
         service, urgency = classify(msg)
         issue = msg
@@ -586,16 +591,18 @@ def marketplace_reply(message, context=None):
                 "urgency": urgency,
                 "issue": issue,
                 "intake_step": "",
-                "matched_business_id": 0
+                "matched_business_id": 0,
+                "business_name": ""
             }
 
         return {
-            "reply": f"Got it — that sounds like {service}. What city or ZIP code is the job in?",
+            "reply": f"Got it — that sounds like {service}. What Florida city or ZIP code is the job in?",
             "service": service,
             "urgency": urgency,
             "issue": issue,
             "intake_step": "location",
-            "matched_business_id": 0
+            "matched_business_id": 0,
+            "business_name": ""
         }
 
     if step == "location":
@@ -1446,7 +1453,8 @@ let chatContext = {
   customer_email: "",
   customer_zip: "",
   matched_business_id: 0,
-  business_name: ""
+  business_name: "",
+  marketplace_mode: __MARKETPLACE_MODE__
 };
 
 function add(text,cls){
@@ -1473,7 +1481,8 @@ async function sendChat(){
    body:JSON.stringify({
      message,
      context: chatContext,
-     business_id: __BUSINESS_ID__
+     business_id: __BUSINESS_ID__,
+     marketplace_mode: chatContext.marketplace_mode
    })
  });
 
@@ -1601,14 +1610,17 @@ def customer_page_html(business_id=BUSINESS_ID):
         business_name.replace("\\", "\\\\").replace("'", "\\'")
     )
     page = page.replace("__BUSINESS_ID__", str(business_id))
+    page = page.replace("__MARKETPLACE_MODE__", "false")
     return page
 
 
 def marketplace_page_html():
     page = INDEX
     page = page.replace("LeadPilot Demo Services", "LeadPilot AI")
+    page = page.replace("24/7 lead assistant for local service businesses", "Find a local service business matched to your job and location")
     page = page.replace("__BUSINESS_NAME__", "LeadPilot AI")
     page = page.replace("__BUSINESS_ID__", "0")
+    page = page.replace("__MARKETPLACE_MODE__", "true")
     return page
 
 def dashboard_score_reasons(row):
@@ -2031,6 +2043,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if content_type.startswith("text/html"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
 
         if extra_headers:
             for k, v in extra_headers:
@@ -2219,12 +2234,13 @@ class Handler(BaseHTTPRequestHandler):
             data = self.read_json()
 
             if p == "/api/chat":
+                marketplace_mode = bool(data.get("marketplace_mode"))
                 try:
                     business_id = int(data.get("business_id"))
                 except Exception:
                     business_id = BUSINESS_ID
 
-                if business_id == 0:
+                if marketplace_mode or business_id == 0:
                     out = marketplace_reply(
                         data.get("message", ""),
                         data.get("context") or {}
