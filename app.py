@@ -339,9 +339,9 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
         "score_reasons": reasons
     }
 
-def assistant_reply(message):
+def assistant_reply(message, context=None):
     business = get_business_settings()
-    service, urgency = classify(message)
+    context = context or {}
 
     business_name = business.get("name") or BUSINESS_NAME
     services_raw = business.get("services") or ""
@@ -351,6 +351,37 @@ def assistant_reply(message):
 
     msg = (message or "").strip()
     msg_lower = msg.lower()
+
+    detected_service, detected_urgency = classify(msg)
+    prior_service = (context.get("service") or "").strip()
+    prior_urgency = (context.get("urgency") or "").strip()
+    prior_issue = (context.get("issue") or "").strip()
+
+    # Recognize short follow-up location answers such as:
+    # "Orlando", "I'm in Orlando", "32259", "St. Augustine".
+    location_phrases = [
+        "i'm in ", "im in ", "i am in ", "located in ", "my zip is ",
+        "zip is ", "i live in ", "we're in ", "were in "
+    ]
+    looks_like_zip = msg.replace("-", "").isdigit() and 4 <= len(msg.replace("-", "")) <= 10
+    looks_like_location_followup = (
+        bool(prior_service)
+        and (
+            any(p in msg_lower for p in location_phrases)
+            or looks_like_zip
+            or (
+                len(msg.split()) <= 4
+                and detected_service == "General Repair"
+                and detected_urgency == "Normal"
+            )
+        )
+    )
+
+    # Keep the original job context when the customer is merely answering
+    # a follow-up question about location.
+    service = prior_service if looks_like_location_followup and prior_service else detected_service
+    urgency = prior_urgency if looks_like_location_followup and prior_urgency else detected_urgency
+    issue = prior_issue if looks_like_location_followup and prior_issue else msg
 
     service_supported = True
     if services and service != "General Repair":
@@ -367,12 +398,48 @@ def assistant_reply(message):
         ]
     )
 
-    if location_question and service_area:
+    # Pull a simple location phrase from the latest message for comparison
+    # with the business's configured service-area text.
+    stated_location = msg
+    for prefix in location_phrases:
+        pos = msg_lower.find(prefix)
+        if pos >= 0:
+            stated_location = msg[pos + len(prefix):].strip(" .?!,")
+            break
+
+    if looks_like_location_followup and service_area:
+        normalized_area = service_area.lower().replace(".", "")
+        normalized_location = stated_location.lower().replace(".", "").strip()
+
+        in_listed_area = False
+        if normalized_location:
+            in_listed_area = (
+                normalized_location in normalized_area
+                or any(
+                    part.strip() and part.strip() in normalized_area
+                    for part in normalized_location.split(",")
+                )
+            )
+
+        if in_listed_area:
+            reply = (
+                f"Yes — {stated_location} appears to match {business_name}'s listed "
+                f"service area ({service_area}). Your {service.lower()} request can be "
+                "submitted below so the business can follow up."
+            )
+        else:
+            reply = (
+                f"{stated_location} does not appear in {business_name}'s listed service "
+                f"area ({service_area}). I can still submit your {service.lower()} request "
+                "so the business can confirm whether they can travel to you."
+            )
+
+    elif location_question and service_area:
         reply = (
             f"{business_name} currently lists its service area as {service_area}. "
-            "Tell me your city or ZIP code and I can include it with your request "
-            "so the business can confirm availability."
+            "Tell me your city or ZIP code and I can compare it with the listed area."
         )
+
     elif not service_supported:
         offered = ", ".join(services)
         reply = (
@@ -380,6 +447,7 @@ def assistant_reply(message):
             f"Your request sounds like {service}. I can still send the details "
             "to the business so they can confirm whether they can help."
         )
+
     elif urgency == "Emergency":
         reply = (
             f"This may be an emergency {service.lower()} issue for {business_name}. "
@@ -387,12 +455,14 @@ def assistant_reply(message):
             "or immediate danger, leave the area and contact the appropriate emergency "
             "or utility service. I can still collect your information for urgent follow-up."
         )
+
     elif urgency == "High":
         reply = (
             f"That sounds like a high-priority {service} request for {business_name}. "
             "Please fill in your contact information below so the business can follow up "
             "as soon as possible."
         )
+
     else:
         area_note = f" Their listed service area is {service_area}." if service_area else ""
         reply = (
@@ -404,6 +474,7 @@ def assistant_reply(message):
         "reply": reply,
         "service": service,
         "urgency": urgency,
+        "issue": issue,
         "business_name": business_name,
         "service_area": service_area,
         "services": services
@@ -565,6 +636,12 @@ button{padding:12px 16px;border:0;border-radius:10px;background:#172033;color:#f
 </div>
 
 <script>
+let chatContext = {
+  service: "",
+  urgency: "",
+  issue: ""
+};
+
 function add(text,cls){
  const c=document.getElementById('chat');
  const d=document.createElement('div');
@@ -586,14 +663,25 @@ async function sendChat(){
  const r=await fetch('/api/chat',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({message})
+   body:JSON.stringify({
+     message,
+     context: chatContext
+   })
  });
 
  const j=await r.json();
 
  add(j.reply,'bot');
- document.getElementById('service').value=j.service;
- document.getElementById('urgency').value=j.urgency;
+ chatContext.service=j.service||chatContext.service;
+ chatContext.urgency=j.urgency||chatContext.urgency;
+ chatContext.issue=j.issue||chatContext.issue;
+ document.getElementById('service').value=chatContext.service;
+ document.getElementById('urgency').value=chatContext.urgency;
+
+ // Keep the original job description when a later message is only a location follow-up.
+ if(j.issue){
+   document.getElementById('details').value=j.issue;
+ }
 }
 
 async function submitLead(){
@@ -999,7 +1087,10 @@ class Handler(BaseHTTPRequestHandler):
             data = self.read_json()
 
             if p == "/api/chat":
-                out = assistant_reply(data.get("message", ""))
+                out = assistant_reply(
+                    data.get("message", ""),
+                    data.get("context") or {}
+                )
 
                 self.send_bytes(
                     json.dumps(out).encode(),
