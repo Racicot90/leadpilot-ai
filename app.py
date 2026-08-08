@@ -787,22 +787,38 @@ def marketplace_reply(message, context=None):
 
 
 def classify(text):
-    t = text.lower()
+    t = (text or "").lower()
 
     if any(x in t for x in ["ac ", "ac.", "my ac", "a/c", "air condition", "hvac", "heat", "furnace"]):
         service = "HVAC"
-    elif any(x in t for x in ["pipe", "plumb", "toilet", "sink", "drain", "water leak"]):
+    elif any(x in t for x in ["pipe", "plumb", "toilet", "sink", "drain", "water leak", "leak"]):
         service = "Plumbing"
-    elif any(x in t for x in ["electric", "outlet", "breaker", "power", "wire", "sparking"]):
+    elif any(x in t for x in ["electric", "outlet", "breaker", "power", "wire", "wiring", "sparking"]):
         service = "Electrical"
-    elif any(x in t for x in ["roof", "shingle", "roof leak"]):
+    elif any(x in t for x in ["roof", "shingle", "roof leak", "ceiling leak"]):
         service = "Roofing"
     else:
         service = "General Repair"
 
-    if any(x in t for x in ["gas leak", "smell gas", "sparking", "fire", "flooding", "burst pipe"]):
+    emergency_signals = [
+        "gas leak", "smell gas", "fire", "sparking", "electrical arcing",
+        "burst pipe", "major flooding", "water pouring", "ceiling collapsing"
+    ]
+
+    high_time_signals = [
+        "today", "asap", "urgent", "right now", "immediately",
+        "need it fixed now", "need someone now", "same day"
+    ]
+
+    active_problem_signals = [
+        "not working", "stopped working", "no ac", "no heat",
+        "leaking", "leak", "flooding", "overflowing", "broken",
+        "won't turn on", "wont turn on", "no power"
+    ]
+
+    if any(x in t for x in emergency_signals):
         urgency = "Emergency"
-    elif any(x in t for x in ["today", "asap", "urgent", "right now", "no ac", "no heat"]):
+    elif any(x in t for x in high_time_signals) or any(x in t for x in active_problem_signals):
         urgency = "High"
     else:
         urgency = "Normal"
@@ -829,9 +845,9 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
 
     score = 20
     if urgency_v.lower() in ("emergency", "urgent"):
-        score += 30
+        score += 35
     elif urgency_v.lower() == "high":
-        score += 20
+        score += 25
     else:
         score += 5
 
@@ -840,10 +856,11 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
     severe = ("not working","stopped working","no ac","no heat","leaking","burst","flooding","sparking","smell gas","roof leaking","ceiling leaking","won\'t turn on","broken")
     projects = ("replace","replacement","install","installation","new system","new roof","repiping","panel upgrade","water heater","whole house")
 
-    if any(x in t for x in immediate): score += 15
+    if any(x in t for x in immediate): score += 18
     if any(x in t for x in research): score -= 10
-    if any(x in t for x in severe): score += 12
+    if any(x in t for x in severe): score += 15
     if any(x in t for x in projects): score += 7
+    if urgency_v.lower() == "high" and any(x in t for x in severe): score += 8
     if service_v and service_v.lower() != "general repair": score += 7
     if phone_v: score += 8
     if email_v: score += 3
@@ -1935,7 +1952,7 @@ def dashboard_html(business_id=BUSINESS_ID):
 
           <div class="details">
             <div><span>Service</span><strong>{r['service'] or 'General Repair'}</strong></div>
-            <div><span>ZIP</span><strong>{r['zip'] or '—'}</strong></div>
+            <div><span>Location</span><strong>{r['zip'] or '—'}</strong></div>
             <div><span>Phone</span><strong>{phone or '—'}</strong></div>
             <div><span>Email</span><strong>{email or '—'}</strong></div>
           </div>
