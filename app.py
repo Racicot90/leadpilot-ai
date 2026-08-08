@@ -1063,27 +1063,90 @@ def dashboard_score_reasons(row):
     return reasons[:4] or ["Basic lead information"]
 
 
+def lead_wait_minutes(row):
+    """Minutes since the lead was created. created_at is stored in UTC."""
+    raw = (row["created_at"] or "").strip()
+    if not raw:
+        return 0
+
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            created = datetime.strptime(raw, fmt)
+            return max(0, int((datetime.utcnow() - created).total_seconds() // 60))
+        except ValueError:
+            pass
+
+    return 0
+
+
+def format_wait_time(minutes):
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours < 24:
+        return f"{hours}h {mins}m" if mins else f"{hours}h"
+    days = hours // 24
+    rem_hours = hours % 24
+    return f"{days}d {rem_hours}h" if rem_hours else f"{days}d"
+
+
 def lead_followup_status(row):
-    """Return a simple follow-up recommendation for the dashboard."""
+    """Timer-aware follow-up recommendation for the dashboard."""
     status = (row["status"] or "New").strip()
     score = int(row["lead_score"] or 0)
     qualification = (row["qualification"] or "Standard").strip()
+    wait_minutes = lead_wait_minutes(row)
 
     if status == "Closed":
-        return ("done", "Closed — no follow-up needed")
+        return ("done", "Closed — no follow-up needed", wait_minutes, False)
     if status == "Booked":
-        return ("booked", "Booked — customer is scheduled")
+        return ("booked", "Booked — customer is scheduled", wait_minutes, False)
     if status == "Contacted":
-        return ("contacted", "Contacted — continue follow-up as needed")
+        return ("contacted", "Contacted — continue follow-up as needed", wait_minutes, False)
+
+    # Response-time goals by lead quality.
+    if qualification == "Hot" or score >= 90:
+        limit = 10
+        label = "Hot lead"
+    elif qualification == "Strong" or score >= 75:
+        limit = 20
+        label = "Strong lead"
+    elif qualification == "Qualified" or score >= 55:
+        limit = 60
+        label = "Qualified lead"
+    else:
+        limit = 120
+        label = "Standard lead"
+
+    overdue = wait_minutes >= limit
+
+    if overdue:
+        return (
+            "overdue",
+            f"🚨 OVERDUE — {label} waiting {format_wait_time(wait_minutes)}. Contact now.",
+            wait_minutes,
+            True
+        )
+
+    remaining = max(1, limit - wait_minutes)
 
     if qualification == "Hot" or score >= 90:
-        return ("urgent", "🔥 Call now — highest-priority lead")
-    if qualification == "Strong" or score >= 75:
-        return ("soon", "Follow up within 10 minutes")
-    if qualification == "Qualified" or score >= 55:
-        return ("today", "Follow up today")
-    return ("normal", "Standard follow-up")
+        text = f"🔥 Call now — {format_wait_time(wait_minutes)} waiting · goal under {limit} min"
+        css = "urgent"
+    elif qualification == "Strong" or score >= 75:
+        text = f"Follow up within {remaining} min · waiting {format_wait_time(wait_minutes)}"
+        css = "soon"
+    elif qualification == "Qualified" or score >= 55:
+        text = f"Follow up within {remaining} min · waiting {format_wait_time(wait_minutes)}"
+        css = "today"
+    else:
+        text = f"Standard follow-up · waiting {format_wait_time(wait_minutes)}"
+        css = "normal"
 
+    return (css, text, wait_minutes, False)
 
 def dashboard_html():
     business = get_business_settings()
@@ -1102,6 +1165,7 @@ def dashboard_html():
     counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
     quality_counts = {"Hot":0, "Strong":0, "Qualified":0, "Standard":0}
     followup_count = 0
+    overdue_count = 0
 
     for r in rows:
         status = r["status"] or "New"
@@ -1112,6 +1176,9 @@ def dashboard_html():
 
         if status == "New":
             followup_count += 1
+            _, _, _, is_overdue = lead_followup_status(r)
+            if is_overdue:
+                overdue_count += 1
 
     cards = ""
 
@@ -1123,7 +1190,8 @@ def dashboard_html():
         lead_score = r["lead_score"] or 0
         qualification = r["qualification"] or "Standard"
         recommended_action = r["recommended_action"] or "Follow up and confirm the job details."
-        followup_class, followup_text = lead_followup_status(r)
+        followup_class, followup_text, wait_minutes, is_overdue = lead_followup_status(r)
+        wait_text = format_wait_time(wait_minutes)
         score_reasons = dashboard_score_reasons(r)
         reason_chips = "".join(
             f'<span class="reason-chip">{html.escape(reason)}</span>'
@@ -1140,7 +1208,7 @@ def dashboard_html():
           <div class="lead-top">
             <div>
               <div class="lead-name">{r['name'] or 'Unnamed lead'}</div>
-              <div class="lead-time">{r['created_at']}</div>
+              <div class="lead-time">{r['created_at']} · Waiting {wait_text}</div>
             </div>
             <div class="badges">
               <span class="badge score-badge">{lead_score}/100</span>
@@ -1245,6 +1313,10 @@ h1{{font-size:28px;margin:0}}
 .followup-summary p{{margin:0;color:#667085;font-size:12px;max-width:460px}}
 .followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}}
 .followup-urgent{{background:#fee4e2;color:#b42318}}
+.followup-overdue{{background:#b42318;color:#fff;box-shadow:0 0 0 3px rgba(180,35,24,.10)}}
+.overdue-total{{padding:0 18px;border-left:1px solid #eaecf0;border-right:1px solid #eaecf0}}
+.overdue-total span{{display:block;font-size:12px;color:#667085}}
+.overdue-total strong{{font-size:28px;color:#b42318}}
 .followup-soon{{background:#fff0c2;color:#93370d}}
 .followup-today{{background:#eaf2ff;color:#175cd3}}
 .followup-normal{{background:#f2f4f7;color:#344054}}
@@ -1271,6 +1343,7 @@ h1{{font-size:28px;margin:0}}
  .priority-summary{{grid-template-columns:1fr 1fr}}
  .followup-summary{{display:block}}
  .followup-summary p{{margin-top:8px}}
+ .overdue-total{{border:0;padding:10px 0 0}}
  .leads{{grid-template-columns:1fr}}
  .status-actions{{grid-template-columns:1fr 1fr}}
  h1{{font-size:25px}}
@@ -1306,7 +1379,11 @@ h1{{font-size:28px;margin:0}}
     <span>Needs follow-up</span>
     <strong>{followup_count}</strong>
   </div>
-  <p>New leads stay in this queue until you mark them Contacted, Booked, or Closed.</p>
+  <div class="overdue-total">
+    <span>Overdue</span>
+    <strong>{overdue_count}</strong>
+  </div>
+  <p>Timers stop when a lead is marked Contacted, Booked, or Closed.</p>
 </div>
 
 <div class="priority-summary">
@@ -1322,6 +1399,8 @@ h1{{font-size:28px;margin:0}}
 </div>
 
 <script>
+setTimeout(()=>location.reload(),60000);
+
 async function updateStatus(id,status){{
  const s=document.getElementById('saved-'+id);
  s.textContent='Saving '+status+'...';
