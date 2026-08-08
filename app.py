@@ -67,9 +67,7 @@ def init_db():
                 services TEXT DEFAULT '',
                 service_area TEXT DEFAULT '',
                 email TEXT DEFAULT '',
-                alert_phone TEXT DEFAULT '',
-                username TEXT,
-                password_hash TEXT
+                alert_phone TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -103,9 +101,7 @@ def init_db():
                 services TEXT DEFAULT '',
                 service_area TEXT DEFAULT '',
                 email TEXT DEFAULT '',
-                alert_phone TEXT DEFAULT '',
-                username TEXT,
-                password_hash TEXT
+                alert_phone TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -134,8 +130,6 @@ def init_db():
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT ''")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS alert_phone TEXT DEFAULT ''")
-        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS username TEXT")
-        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS password_hash TEXT")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
@@ -147,8 +141,6 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN service_area TEXT DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN email TEXT DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN alert_phone TEXT DEFAULT ''",
-            "ALTER TABLE businesses ADD COLUMN username TEXT",
-            "ALTER TABLE businesses ADD COLUMN password_hash TEXT",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
             "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
@@ -162,42 +154,11 @@ def init_db():
     con.close()
 
 
-def hash_password(password):
-    salt = os.urandom(16).hex()
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode(),
-        bytes.fromhex(salt),
-        180000
-    ).hex()
-    return f"{salt}${digest}"
-
-def verify_password(password, stored):
-    if not stored or "$" not in stored:
-        return False
-    try:
-        salt, expected = stored.split("$", 1)
-        digest = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode(),
-            bytes.fromhex(salt),
-            180000
-        ).hex()
-        return hmac.compare_digest(digest, expected)
-    except Exception:
-        return False
-
-def business_exists(business_id):
-    con = db()
-    row = execute(con, "SELECT id FROM businesses WHERE id=?", (business_id,)).fetchone()
-    con.close()
-    return bool(row)
-
 def get_business_settings(business_id=BUSINESS_ID):
     con = db()
     row = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone,username FROM businesses WHERE id=?",
+        "SELECT id,name,services,service_area,email,alert_phone FROM businesses WHERE id=?",
         (business_id,)
     ).fetchone()
     con.close()
@@ -209,8 +170,7 @@ def get_business_settings(business_id=BUSINESS_ID):
             "services": "",
             "service_area": "",
             "email": "",
-            "alert_phone": NOTIFY_PHONE,
-            "username": ""
+            "alert_phone": NOTIFY_PHONE
         }
 
     return {
@@ -219,8 +179,7 @@ def get_business_settings(business_id=BUSINESS_ID):
         "services": row["services"] or "",
         "service_area": row["service_area"] or "",
         "email": row["email"] or "",
-        "alert_phone": row["alert_phone"] or NOTIFY_PHONE,
-        "username": row["username"] or ""
+        "alert_phone": row["alert_phone"] or NOTIFY_PHONE
     }
 
 def save_business_settings(name, services, service_area, email, alert_phone, business_id=BUSINESS_ID):
@@ -240,62 +199,7 @@ def save_business_settings(name, services, service_area, email, alert_phone, bus
     con.commit()
     con.close()
 
-def ensure_default_business_login():
-    con = db()
-    row = execute(
-        con,
-        "SELECT username,password_hash FROM businesses WHERE id=1"
-    ).fetchone()
-    if row:
-        username = (row["username"] or "").strip()
-        password_hash = row["password_hash"] or ""
-        if not username or not password_hash:
-            execute(
-                con,
-                "UPDATE businesses SET username=?, password_hash=? WHERE id=1",
-                (ADMIN_USERNAME, hash_password(ADMIN_PASSWORD))
-            )
-            con.commit()
-    con.close()
-
-def create_business_account(name, username, password):
-    name = (name or "").strip()
-    username = (username or "").strip().lower()
-    password = password or ""
-
-    if len(name) < 2:
-        return None, "Enter a business name."
-    if len(username) < 3:
-        return None, "Username must be at least 3 characters."
-    if len(password) < 8:
-        return None, "Password must be at least 8 characters."
-
-    con = db()
-    existing = execute(
-        con,
-        "SELECT id FROM businesses WHERE LOWER(username)=LOWER(?)",
-        (username,)
-    ).fetchone()
-    if existing:
-        con.close()
-        return None, "That username is already taken."
-
-    row = execute(con, "SELECT COALESCE(MAX(id),0)+1 AS next_id FROM businesses").fetchone()
-    next_id = int(row["next_id"])
-
-    execute(
-        con,
-        """INSERT INTO businesses
-           (id,name,services,service_area,email,alert_phone,username,password_hash)
-           VALUES(?,?,?,?,?,?,?,?)""",
-        (next_id, name, "", "", "", "", username, hash_password(password))
-    )
-    con.commit()
-    con.close()
-    return next_id, ""
-
-
-def settings_html(business_id, saved=False):
+def settings_html(saved=False, business_id=BUSINESS_ID):
     s = get_business_settings(business_id)
     esc = html.escape
     saved_msg = '<div class="success">✓ Settings saved</div>' if saved else ''
@@ -324,18 +228,15 @@ button{{width:100%;padding:14px;border:0;border-radius:10px;background:#172033;c
 </head>
 <body>
 <div class="wrap">
-<div class="links"><a href="/dashboard">← Dashboard</a><a href="/b/{business_id}">Customer page</a></div>
+<div class="links"><a href="/dashboard?business={business_id}">← Dashboard</a><a href="/b/{business_id}">Customer page</a></div>
 <div class="card">
 <h1>Business Settings</h1>
 <div class="sub">Customize LeadPilot for this business.</div>
 {saved_msg}
-<div style="background:#eef4ff;border-radius:12px;padding:12px;margin-bottom:14px;font-size:13px">
-<strong>Customer link:</strong> <a href="/b/{business_id}">/b/{business_id}</a>
-</div>
 <div style="background:#f7f9fc;border-radius:12px;padding:12px;margin-bottom:16px;font-size:13px;color:#475467">
 LeadPilot now uses these settings when answering customers about the business, services, and service area.
 </div>
-<form method="POST" action="/settings">
+<form method="POST" action="/settings?business={business_id}">
 <label>Business name</label>
 <input name="name" value="{esc(s['name'], quote=True)}" required>
 
@@ -359,6 +260,95 @@ LeadPilot now uses these settings when answering customers about the business, s
 </div>
 </body>
 </html>"""
+
+def list_businesses():
+    con = db()
+    rows = execute(
+        con,
+        "SELECT id,name,services,service_area,email,alert_phone FROM businesses ORDER BY id"
+    ).fetchall()
+    con.close()
+    return rows
+
+
+def create_business(name, services="", service_area="", email="", alert_phone=""):
+    con = db()
+    if USE_POSTGRES:
+        new_id = execute(con, "SELECT COALESCE(MAX(id),0)+1 AS next_id FROM businesses").fetchone()["next_id"]
+    else:
+        new_id = execute(con, "SELECT COALESCE(MAX(id),0)+1 AS next_id FROM businesses").fetchone()["next_id"]
+
+    execute(
+        con,
+        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone)
+           VALUES(?,?,?,?,?,?)""",
+        (
+            int(new_id),
+            (name or f"Business {new_id}").strip(),
+            (services or "").strip(),
+            (service_area or "").strip(),
+            (email or "").strip(),
+            (alert_phone or "").strip()
+        )
+    )
+    con.commit()
+    con.close()
+    return int(new_id)
+
+
+def businesses_html(created_id=None):
+    rows = list_businesses()
+    items = ""
+    for r in rows:
+        bid = r["id"]
+        items += f"""
+        <div class="biz">
+          <div><strong>{html.escape(r['name'] or 'Unnamed business')}</strong>
+          <span>{html.escape(r['service_area'] or 'No service area yet')}</span></div>
+          <div class="bizlinks">
+            <a href="/b/{bid}">Customer page</a>
+            <a href="/dashboard?business={bid}">Dashboard</a>
+            <a href="/settings?business={bid}">Settings</a>
+          </div>
+        </div>
+        """
+
+    created = ""
+    if created_id:
+        created = f'<div class="success">✓ Business created. Customer page: <a href="/b/{created_id}">/b/{created_id}</a></div>'
+
+    return f"""<!doctype html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot Businesses</title>
+<style>
+*{{box-sizing:border-box}} body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:780px;margin:auto;padding:18px}} .card,.biz{{background:#fff;border-radius:16px;padding:18px;margin-bottom:12px;box-shadow:0 5px 18px rgba(0,0,0,.05)}}
+h1{{margin:0 0 6px}} .muted{{color:#667085;margin-bottom:18px}}
+label{{display:block;font-weight:800;margin:12px 0 5px}} input,textarea{{width:100%;padding:12px;border:1px solid #d0d5dd;border-radius:10px;font-size:16px}}
+button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;background:#172033;color:white;font-weight:800}}
+.biz{{display:flex;justify-content:space-between;gap:14px;align-items:center}} .biz span{{display:block;color:#667085;font-size:13px;margin-top:4px}}
+.bizlinks{{display:flex;gap:10px;flex-wrap:wrap}} a{{color:#3448c5;font-weight:700;text-decoration:none}} .success{{background:#dcfae6;color:#05603a;padding:12px;border-radius:10px;margin-bottom:12px}}
+@media(max-width:650px){{.biz{{display:block}} .bizlinks{{margin-top:12px}}}}
+</style></head><body><div class="wrap">
+<h1>LeadPilot Businesses</h1>
+<div class="muted">Each business gets its own customer page, settings, dashboard, service area, and leads.</div>
+{created}
+<div class="card">
+<h2 style="margin-top:0">Create business</h2>
+<form method="POST" action="/businesses">
+<label>Business name</label><input name="name" required>
+<label>Services</label><textarea name="services" placeholder="HVAC, plumbing, roofing"></textarea>
+<label>Service area</label><input name="service_area" placeholder="Orlando, Winter Park, ZIP codes...">
+<label>Email</label><input name="email" type="email">
+<label>Hot-lead alert phone</label><input name="alert_phone" placeholder="+19045551234">
+<button type="submit">Create business page</button>
+</form>
+</div>
+<h2>Your businesses</h2>
+{items or '<div class="card">No businesses yet.</div>'}
+</div></body></html>"""
+
 
 def classify(text):
     t = text.lower()
@@ -476,13 +466,9 @@ def _extract_name(value):
         return value.title()
     return ""
 
-def assistant_reply(message, context=None):
-    context = context or {}
-    try:
-        business_id = int(context.get("business_id") or BUSINESS_ID)
-    except Exception:
-        business_id = BUSINESS_ID
+def assistant_reply(message, context=None, business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
+    context = context or {}
 
     business_name = business.get("name") or BUSINESS_NAME
     services_raw = business.get("services") or ""
@@ -824,72 +810,72 @@ def send_twilio_body(to_phone, body):
 
 
 def run_lead_chase_once():
-    """Send reminder alerts for overdue Hot leads across all business accounts."""
+    """Send reminder alerts for overdue Hot leads across all businesses."""
     try:
-        con = db()
-        rows = execute(
-            con,
-            """SELECT * FROM leads
-               WHERE status='New'
-               ORDER BY id DESC"""
-        ).fetchall()
-
-        for r in rows:
-            business_id = int(r["business_id"] or 1)
-            business = get_business_settings(business_id)
-            alert_phone = (business.get("alert_phone") or NOTIFY_PHONE).strip()
+        for business in list_businesses():
+            business_id = int(business["id"])
+            alert_phone = (business["alert_phone"] or NOTIFY_PHONE or "").strip()
             if not alert_phone:
                 continue
 
-            score = int(r["lead_score"] or 0)
-            quality = (r["qualification"] or "").strip()
-            if quality != "Hot" and score < 90:
-                continue
+            con = db()
+            rows = execute(
+                con,
+                """SELECT * FROM leads
+                   WHERE business_id=? AND status='New'
+                   ORDER BY id DESC""",
+                (business_id,)
+            ).fetchall()
 
-            mins = lead_wait_minutes(r)
-            chase10 = int(r["chase_10_sent"] or 0)
-            chase30 = int(r["chase_30_sent"] or 0)
+            for r in rows:
+                score = int(r["lead_score"] or 0)
+                quality = (r["qualification"] or "").strip()
+                if quality != "Hot" and score < 90:
+                    continue
 
-            if mins >= 10 and not chase10:
-                name = (r["name"] or "Customer").strip()
-                phone = (r["phone"] or "No phone").strip()
-                service = (r["service"] or "Service").strip()
-                body = (
-                    f"🔥 LeadPilot follow-up: {service} lead {name} "
-                    f"({phone}) has been waiting {mins} minutes. Contact now."
-                )
-                if send_twilio_body(alert_phone, body):
-                    execute(
-                        con,
-                        "UPDATE leads SET chase_10_sent=1 WHERE id=? AND business_id=?",
-                        (r["id"], business_id)
+                mins = lead_wait_minutes(r)
+                chase10 = int(r["chase_10_sent"] or 0)
+                chase30 = int(r["chase_30_sent"] or 0)
+
+                if mins >= 10 and not chase10:
+                    name = (r["name"] or "Customer").strip()
+                    phone = (r["phone"] or "No phone").strip()
+                    service = (r["service"] or "Service").strip()
+                    body = (
+                        f"🔥 LeadPilot follow-up: {service} lead {name} "
+                        f"({phone}) has been waiting {mins} minutes. Contact now."
                     )
-                    con.commit()
-                    chase10 = 1
-                    print("Lead chase 10-min sent:", r["id"], flush=True)
+                    if send_twilio_body(alert_phone, body):
+                        execute(
+                            con,
+                            "UPDATE leads SET chase_10_sent=1 WHERE id=? AND business_id=?",
+                            (r["id"], business_id)
+                        )
+                        con.commit()
+                        chase10 = 1
+                        print("Lead chase 10-min sent:", business_id, r["id"], flush=True)
 
-            if mins >= 30 and not chase30:
-                name = (r["name"] or "Customer").strip()
-                phone = (r["phone"] or "No phone").strip()
-                service = (r["service"] or "Service").strip()
-                body = (
-                    f"🚨 URGENT LeadPilot: Hot {service} lead {name} "
-                    f"({phone}) is still New after {mins} minutes."
-                )
-                if send_twilio_body(alert_phone, body):
-                    execute(
-                        con,
-                        "UPDATE leads SET chase_30_sent=1 WHERE id=? AND business_id=?",
-                        (r["id"], business_id)
+                if mins >= 30 and not chase30:
+                    name = (r["name"] or "Customer").strip()
+                    phone = (r["phone"] or "No phone").strip()
+                    service = (r["service"] or "Service").strip()
+                    body = (
+                        f"🚨 URGENT LeadPilot: Hot {service} lead {name} "
+                        f"({phone}) is still New after {mins} minutes."
                     )
-                    con.commit()
-                    print("Lead chase 30-min sent:", r["id"], flush=True)
+                    if send_twilio_body(alert_phone, body):
+                        execute(
+                            con,
+                            "UPDATE leads SET chase_30_sent=1 WHERE id=? AND business_id=?",
+                            (r["id"], business_id)
+                        )
+                        con.commit()
+                        print("Lead chase 30-min sent:", business_id, r["id"], flush=True)
 
-        con.close()
+            con.close()
 
     except Exception as e:
         print("Lead chase worker error:", repr(e), flush=True)
-
 
 def lead_chase_worker():
     """Background MVP worker. Checks about once per minute while the web service is awake."""
@@ -1017,59 +1003,38 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
         print("Twilio SMS error:", repr(e), detail[:1000], flush=True)
         return False
 
-def make_session(business_id, username):
-    payload = f"{business_id}|{username}"
+def make_session(username):
     sig = hmac.new(
         SESSION_SECRET.encode(),
-        payload.encode(),
+        username.encode(),
         hashlib.sha256
     ).hexdigest()
-    return f"{payload}|{sig}"
+    return f"{username}.{sig}"
 
-def session_identity(headers):
-    cookie = SimpleCookie()
-    cookie.load(headers.get("Cookie", ""))
-    token = cookie.get("leadpilot_session")
-    if not token:
-        return None
+def session_valid(value):
+    if not value or "." not in value:
+        return False
 
-    value = token.value
-    parts = value.split("|")
-    if len(parts) != 3:
-        return None
+    username, sig = value.rsplit(".", 1)
 
-    business_id_s, username, sig = parts
-    payload = f"{business_id_s}|{username}"
     expected = hmac.new(
         SESSION_SECRET.encode(),
-        payload.encode(),
+        username.encode(),
         hashlib.sha256
     ).hexdigest()
 
-    if not hmac.compare_digest(sig, expected):
-        return None
-
-    try:
-        business_id = int(business_id_s)
-    except ValueError:
-        return None
-
-    con = db()
-    row = execute(
-        con,
-        "SELECT id,username FROM businesses WHERE id=?",
-        (business_id,)
-    ).fetchone()
-    con.close()
-
-    if not row or (row["username"] or "").lower() != username.lower():
-        return None
-
-    return {"business_id": business_id, "username": username}
+    return (
+        username == ADMIN_USERNAME
+        and hmac.compare_digest(sig, expected)
+    )
 
 def logged_in(headers):
-    return session_identity(headers) is not None
+    cookie = SimpleCookie()
+    cookie.load(headers.get("Cookie", ""))
 
+    token = cookie.get("leadpilot_session")
+
+    return bool(token and session_valid(token.value))
 
 INDEX = r"""<!doctype html>
 <html>
@@ -1132,7 +1097,6 @@ button{padding:12px 16px;border:0;border-radius:10px;background:#172033;color:#f
 
 <script>
 let chatContext = {
-  business_id: __BUSINESS_ID__,
   service: "",
   urgency: "",
   issue: "",
@@ -1166,7 +1130,8 @@ async function sendChat(){
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
      message,
-     context: chatContext
+     context: chatContext,
+     business_id: __BUSINESS_ID__
    })
  });
 
@@ -1199,7 +1164,7 @@ async function sendChat(){
 
 async function submitLead(){
  const data={
-   business_id: chatContext.business_id,
+   business_id: __BUSINESS_ID__,
    name:document.getElementById('name').value,
    phone:document.getElementById('phone').value,
    email:document.getElementById('email').value,
@@ -1276,41 +1241,11 @@ button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;co
 <div class="error">__ERROR__</div>
 </form>
 
-<a class="back" href="/">← Customer page</a><br><a class="back" href="/signup">Create business account</a>
+<a class="back" href="/">← Customer page</a>
 </div>
 </div>
 </body>
 </html>"""
-
-SIGNUP = r"""<!doctype html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Create LeadPilot Account</title>
-<style>
-body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#172033}
-.wrap{max-width:460px;margin:40px auto;padding:18px}
-.card{background:#fff;border-radius:20px;padding:26px;box-shadow:0 8px 30px rgba(0,0,0,.08)}
-h1{margin-top:0}.muted{color:#667085;margin-bottom:18px}
-input{width:100%;box-sizing:border-box;padding:13px;border:1px solid #d0d5dd;border-radius:10px;margin:7px 0;font-size:16px}
-button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;color:#fff;font-weight:800;font-size:16px;margin-top:10px}
-.error{color:#b42318;margin-top:12px}.back{display:inline-block;margin-top:18px;color:#3448c5;text-decoration:none;font-weight:700}
-</style>
-</head>
-<body>
-<div class="wrap"><div class="card">
-<h1>Create Business Account</h1>
-<div class="muted">Start a private LeadPilot workspace for your business.</div>
-<form method="POST" action="/signup">
-<input name="business_name" placeholder="Business name" required>
-<input name="username" placeholder="Username" autocomplete="username" required>
-<input name="password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" required>
-<button type="submit">Create Account</button>
-<div class="error">__ERROR__</div>
-</form>
-<a class="back" href="/login">Already have an account? Sign in</a>
-</div></div>
-</body></html>"""
 
 def customer_page_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
@@ -1453,7 +1388,7 @@ def lead_followup_status(row):
 
     return (css, text, wait_minutes, False)
 
-def dashboard_html(business_id):
+def dashboard_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
     con = db()
 
@@ -1667,7 +1602,7 @@ h1{{font-size:28px;margin:0}}
 
 <div class="toplinks">
 <a href="/b/{business_id}">Customer page</a>
-<a href="/settings">Settings</a>
+<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a>
 <a href="/logout">Log out</a>
 </div>
 </header>
@@ -1710,7 +1645,7 @@ async function updateStatus(id,status){{
  const s=document.getElementById('saved-'+id);
  s.textContent='Saving '+status+'...';
 
- const r=await fetch('/api/leads/'+id+'/status',{{
+ const r=await fetch('/api/leads/'+id+'/status?business={business_id}',{{
    method:'POST',
    headers:{{'Content-Type':'application/json'}},
    body:JSON.stringify({{status}})
@@ -1763,27 +1698,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        p = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        p = parsed_url.path
+        query = parse_qs(parsed_url.query)
 
         if p == "/":
-            self.send_bytes(customer_page_html(1).encode())
+            self.send_bytes(customer_page_html(BUSINESS_ID).encode())
 
         elif p.startswith("/b/"):
             try:
-                business_id = int(p.split("/")[2])
+                business_id = int(p.strip("/").split("/")[1])
             except Exception:
-                self.send_bytes(b"Not found", 404, "text/plain")
+                self.send_bytes(b"Bad business page", 400, "text/plain")
                 return
-            if not business_exists(business_id):
+
+            business = get_business_settings(business_id)
+            if not business or not business.get("name"):
                 self.send_bytes(b"Business not found", 404, "text/plain")
                 return
+
             self.send_bytes(customer_page_html(business_id).encode())
 
-        elif p == "/signup":
-            if logged_in(self.headers):
-                self.redirect("/dashboard")
-            else:
-                self.send_bytes(SIGNUP.replace("__ERROR__", "").encode())
+        elif p == "/businesses":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+            created = query.get("created", [None])[0]
+            self.send_bytes(businesses_html(created_id=created).encode())
 
         elif p == "/login":
             if logged_in(self.headers):
@@ -1798,24 +1739,29 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         elif p == "/dashboard":
-            ident = session_identity(self.headers)
-            if not ident:
+            if not logged_in(self.headers):
                 self.redirect("/login")
                 return
 
-            self.send_bytes(dashboard_html(ident["business_id"]).encode())
+            try:
+                business_id = int(query.get("business", [BUSINESS_ID])[0])
+            except Exception:
+                business_id = BUSINESS_ID
+            self.send_bytes(dashboard_html(business_id).encode())
 
         elif p == "/settings":
-            ident = session_identity(self.headers)
-            if not ident:
+            if not logged_in(self.headers):
                 self.redirect("/login")
                 return
 
-            query = parse_qs(urlparse(self.path).query)
+            try:
+                business_id = int(query.get("business", [BUSINESS_ID])[0])
+            except Exception:
+                business_id = BUSINESS_ID
             self.send_bytes(
                 settings_html(
-                    ident["business_id"],
-                    saved=query.get("saved") == ["1"]
+                    saved=query.get("saved") == ["1"],
+                    business_id=business_id
                 ).encode()
             )
 
@@ -1841,51 +1787,27 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in parsed.items()}
 
     def do_POST(self):
-        p = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        p = parsed_url.path
+        query = parse_qs(parsed_url.query)
 
         try:
-            if p == "/signup":
-                form = self.read_form()
-                business_id, error = create_business_account(
-                    form.get("business_name", ""),
-                    form.get("username", ""),
-                    form.get("password", "")
-                )
-                if not business_id:
-                    self.send_bytes(
-                        SIGNUP.replace("__ERROR__", html.escape(error)).encode(),
-                        400
-                    )
-                    return
-
-                username = (form.get("username") or "").strip().lower()
-                token = make_session(business_id, username)
-                self.redirect(
-                    "/settings",
-                    [(
-                        "Set-Cookie",
-                        f"leadpilot_session={token}; Path=/; HttpOnly; SameSite=Lax"
-                    )]
-                )
-                return
-
             if p == "/login":
-                form = self.read_form()
-                username = (form.get("username") or "").strip().lower()
-                password = form.get("password") or ""
+                data = self.read_form()
 
-                con = db()
-                row = execute(
-                    con,
-                    """SELECT id,username,password_hash
-                       FROM businesses
-                       WHERE LOWER(username)=LOWER(?)""",
-                    (username,)
-                ).fetchone()
-                con.close()
+                good_user = hmac.compare_digest(
+                    data.get("username", ""),
+                    ADMIN_USERNAME
+                )
 
-                if row and verify_password(password, row["password_hash"]):
-                    token = make_session(int(row["id"]), row["username"])
+                good_pass = hmac.compare_digest(
+                    data.get("password", ""),
+                    ADMIN_PASSWORD
+                )
+
+                if good_user and good_pass:
+                    token = make_session(ADMIN_USERNAME)
+
                     self.redirect(
                         "/dashboard",
                         [(
@@ -1901,32 +1823,59 @@ class Handler(BaseHTTPRequestHandler):
                         ).encode(),
                         401
                     )
+
                 return
 
-            if p == "/settings":
-                ident = session_identity(self.headers)
-                if not ident:
+            if p == "/businesses":
+                if not logged_in(self.headers):
                     self.redirect("/login")
                     return
 
                 form = self.read_form()
+                business_id = create_business(
+                    form.get("name", ""),
+                    form.get("services", ""),
+                    form.get("service_area", ""),
+                    form.get("email", ""),
+                    form.get("alert_phone", "")
+                )
+                self.redirect(f"/businesses?created={business_id}")
+                return
+
+            if p == "/settings":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+
+                form = self.read_form()
+                try:
+                    business_id = int(query.get("business", [BUSINESS_ID])[0])
+                except Exception:
+                    business_id = BUSINESS_ID
+
                 save_business_settings(
                     form.get("name", ""),
                     form.get("services", ""),
                     form.get("service_area", ""),
                     form.get("email", ""),
                     form.get("alert_phone", ""),
-                    ident["business_id"]
+                    business_id=business_id
                 )
-                self.redirect("/settings?saved=1")
+                self.redirect(f"/settings?business={business_id}&saved=1")
                 return
 
             data = self.read_json()
 
             if p == "/api/chat":
+                try:
+                    business_id = int(data.get("business_id") or BUSINESS_ID)
+                except Exception:
+                    business_id = BUSINESS_ID
+
                 out = assistant_reply(
                     data.get("message", ""),
-                    data.get("context") or {}
+                    data.get("context") or {},
+                    business_id=business_id
                 )
 
                 self.send_bytes(
@@ -1938,13 +1887,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if p == "/api/leads":
                 try:
-                    business_id = int(data.get("business_id") or 1)
+                    business_id = int(data.get("business_id") or BUSINESS_ID)
                 except Exception:
-                    business_id = 1
-
-                if not business_exists(business_id):
-                    self.send_bytes(b'{"error":"business not found"}',404,"application/json")
-                    return
+                    business_id = BUSINESS_ID
 
                 con = db()
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -2031,7 +1976,7 @@ class Handler(BaseHTTPRequestHandler):
                     urgency,
                     message,
                     qualification,
-                    business_id
+                    business_id=business_id
                 )
 
                 self.send_bytes(
@@ -2050,8 +1995,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.startswith("/api/leads/") and p.endswith("/status"):
 
-                ident = session_identity(self.headers)
-                if not ident:
+                if not logged_in(self.headers):
                     self.send_bytes(
                         b'{"error":"unauthorized"}',
                         401,
@@ -2062,6 +2006,10 @@ class Handler(BaseHTTPRequestHandler):
                 parts = p.strip("/").split("/")
                 lead_id = int(parts[2])
                 status = data.get("status", "")
+                try:
+                    business_id = int(query.get("business", [BUSINESS_ID])[0])
+                except Exception:
+                    business_id = BUSINESS_ID
 
                 if status not in ["New", "Contacted", "Booked", "Closed"]:
                     self.send_bytes(
@@ -2076,7 +2024,7 @@ class Handler(BaseHTTPRequestHandler):
                 cur = execute(
                     con,
                     "UPDATE leads SET status=? WHERE id=? AND business_id=?",
-                    (status, lead_id, ident["business_id"])
+                    (status, lead_id, business_id)
                 )
 
                 con.commit()
@@ -2122,7 +2070,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    ensure_default_business_login()
 
 # Start automatic lead-chasing reminders.
 if os.environ.get("LEAD_CHASE_WORKER", "1") == "1":
