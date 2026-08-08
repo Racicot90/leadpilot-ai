@@ -1070,17 +1070,8 @@ def dashboard_html():
     rows = execute(
         con,
         """SELECT * FROM leads
-           WHERE business_id=?
-           ORDER BY
-             CASE status
-               WHEN 'New' THEN 0
-               WHEN 'Contacted' THEN 1
-               WHEN 'Booked' THEN 2
-               WHEN 'Closed' THEN 3
-               ELSE 4
-             END,
-             lead_score DESC,
-             id DESC""",
+   WHERE business_id=?
+   ORDER BY lead_score DESC, id DESC""",
         (BUSINESS_ID,)
     ).fetchall()
 
@@ -1288,12 +1279,22 @@ async function updateStatus(id,status){{
    body:JSON.stringify({{status}})
  }});
 
- if(r.ok){{
-   s.textContent='✓ '+status;
-   setTimeout(()=>location.reload(),350);
- }}else{{
-   s.textContent='Could not save';
- }}
+ if(r.ok){
+  const row=s.closest('.status-row');
+  const buttons=row.querySelectorAll('.status-btn');
+
+  buttons.forEach(btn=>{
+    btn.classList.toggle(
+      'active',
+      btn.textContent.trim() === status
+    );
+  });
+
+  s.textContent='✓ '+status;
+  setTimeout(()=>location.reload(),900);
+}else{
+  s.textContent='Could not save';
+    }
 }}
 </script>
 
