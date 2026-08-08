@@ -72,7 +72,25 @@ def init_db():
                 routing_priority INTEGER DEFAULT 0,
                 daily_lead_cap INTEGER DEFAULT 0,
                 last_routed_at TEXT DEFAULT '',
-                reserved_until TEXT DEFAULT ''
+                reserved_until TEXT DEFAULT '',
+                verification_status TEXT DEFAULT 'Pending',
+                test_business INTEGER DEFAULT 0,
+                legal_business_name TEXT DEFAULT '',
+                dba_name TEXT DEFAULT '',
+                owner_contact_name TEXT DEFAULT '',
+                business_phone TEXT DEFAULT '',
+                business_address TEXT DEFAULT '',
+                license_number TEXT DEFAULT '',
+                license_type TEXT DEFAULT '',
+                insurance_provider TEXT DEFAULT '',
+                insurance_expiration TEXT DEFAULT '',
+                business_registration TEXT DEFAULT '',
+                identity_verified INTEGER DEFAULT 0,
+                license_verified INTEGER DEFAULT 0,
+                license_active_verified INTEGER DEFAULT 0,
+                insurance_verified INTEGER DEFAULT 0,
+                registration_verified INTEGER DEFAULT 0,
+                terms_accepted INTEGER DEFAULT 0
             )
         """)
         execute(con, """
@@ -111,7 +129,25 @@ def init_db():
                 routing_priority INTEGER DEFAULT 0,
                 daily_lead_cap INTEGER DEFAULT 0,
                 last_routed_at TEXT DEFAULT '',
-                reserved_until TEXT DEFAULT ''
+                reserved_until TEXT DEFAULT '',
+                verification_status TEXT DEFAULT 'Pending',
+                test_business INTEGER DEFAULT 0,
+                legal_business_name TEXT DEFAULT '',
+                dba_name TEXT DEFAULT '',
+                owner_contact_name TEXT DEFAULT '',
+                business_phone TEXT DEFAULT '',
+                business_address TEXT DEFAULT '',
+                license_number TEXT DEFAULT '',
+                license_type TEXT DEFAULT '',
+                insurance_provider TEXT DEFAULT '',
+                insurance_expiration TEXT DEFAULT '',
+                business_registration TEXT DEFAULT '',
+                identity_verified INTEGER DEFAULT 0,
+                license_verified INTEGER DEFAULT 0,
+                license_active_verified INTEGER DEFAULT 0,
+                insurance_verified INTEGER DEFAULT 0,
+                registration_verified INTEGER DEFAULT 0,
+                terms_accepted INTEGER DEFAULT 0
             )
         """)
         execute(con, """
@@ -145,6 +181,24 @@ def init_db():
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS daily_lead_cap INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_routed_at TEXT DEFAULT ''")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS reserved_until TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS verification_status TEXT DEFAULT 'Pending'")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS test_business INTEGER DEFAULT 1")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS legal_business_name TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS dba_name TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS owner_contact_name TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS business_phone TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS business_address TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS license_number TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS license_type TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS insurance_provider TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS insurance_expiration TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS business_registration TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS identity_verified INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS license_verified INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS license_active_verified INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS insurance_verified INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS registration_verified INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS terms_accepted INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
@@ -161,6 +215,24 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN daily_lead_cap INTEGER DEFAULT 0",
             "ALTER TABLE businesses ADD COLUMN last_routed_at TEXT DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN reserved_until TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN verification_status TEXT DEFAULT 'Pending'",
+            "ALTER TABLE businesses ADD COLUMN test_business INTEGER DEFAULT 1",
+            "ALTER TABLE businesses ADD COLUMN legal_business_name TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN dba_name TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN owner_contact_name TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN business_phone TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN business_address TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN license_number TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN license_type TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN insurance_provider TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN insurance_expiration TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN business_registration TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN identity_verified INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN license_verified INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN license_active_verified INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN insurance_verified INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN registration_verified INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN terms_accepted INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
             "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
@@ -178,59 +250,99 @@ def get_business_settings(business_id=BUSINESS_ID):
     con = db()
     row = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until FROM businesses WHERE id=?",
+        """SELECT id,name,services,service_area,email,alert_phone,
+                  routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until,
+                  verification_status,test_business,legal_business_name,dba_name,
+                  owner_contact_name,business_phone,business_address,license_number,
+                  license_type,insurance_provider,insurance_expiration,business_registration,
+                  identity_verified,license_verified,license_active_verified,
+                  insurance_verified,registration_verified,terms_accepted
+           FROM businesses WHERE id=?""",
         (business_id,)
     ).fetchone()
     con.close()
 
     if not row:
         return {
-            "id": business_id,
-            "name": BUSINESS_NAME,
-            "services": "",
-            "service_area": "",
-            "email": "",
-            "alert_phone": NOTIFY_PHONE,
-            "routing_enabled": 1,
-            "routing_priority": 0,
-            "daily_lead_cap": 0,
-            "last_routed_at": "",
-            "reserved_until": ""
+            "id": business_id, "name": BUSINESS_NAME, "services": "", "service_area": "",
+            "email": "", "alert_phone": NOTIFY_PHONE, "routing_enabled": 1,
+            "routing_priority": 0, "daily_lead_cap": 0, "last_routed_at": "",
+            "reserved_until": "", "verification_status": "Pending", "test_business": 1,
+            "legal_business_name": "", "dba_name": "", "owner_contact_name": "",
+            "business_phone": "", "business_address": "", "license_number": "",
+            "license_type": "", "insurance_provider": "", "insurance_expiration": "",
+            "business_registration": "", "identity_verified": 0, "license_verified": 0,
+            "license_active_verified": 0, "insurance_verified": 0,
+            "registration_verified": 0, "terms_accepted": 0
         }
 
-    return {
-        "id": row["id"],
-        "name": row["name"] or BUSINESS_NAME,
-        "services": row["services"] or "",
-        "service_area": row["service_area"] or "",
-        "email": row["email"] or "",
-        "alert_phone": row["alert_phone"] or NOTIFY_PHONE,
-        "routing_enabled": int(row["routing_enabled"] if row["routing_enabled"] is not None else 1),
-        "routing_priority": int(row["routing_priority"] or 0),
-        "daily_lead_cap": int(row["daily_lead_cap"] or 0),
-        "last_routed_at": row["last_routed_at"] or "",
-        "reserved_until": row["reserved_until"] or ""
-    }
+    return {k: row[k] for k in row.keys()}
 
-def save_business_settings(name, services, service_area, email, alert_phone, routing_enabled=1, routing_priority=0, daily_lead_cap=0, business_id=BUSINESS_ID):
+
+def save_business_settings(name, services, service_area, email, alert_phone,
+                           routing_enabled=1, routing_priority=0, daily_lead_cap=0,
+                           verification_status="Pending", test_business=0,
+                           legal_business_name="", dba_name="", owner_contact_name="",
+                           business_phone="", business_address="", license_number="",
+                           license_type="", insurance_provider="", insurance_expiration="",
+                           business_registration="", identity_verified=0, license_verified=0,
+                           license_active_verified=0, insurance_verified=0,
+                           registration_verified=0, terms_accepted=0,
+                           business_id=BUSINESS_ID):
     con = db()
     execute(
         con,
-        "UPDATE businesses SET name=?, services=?, service_area=?, email=?, alert_phone=?, routing_enabled=?, routing_priority=?, daily_lead_cap=? WHERE id=?",
+        """UPDATE businesses SET name=?,services=?,service_area=?,email=?,alert_phone=?,
+           routing_enabled=?,routing_priority=?,daily_lead_cap=?,
+           verification_status=?,test_business=?,legal_business_name=?,dba_name=?,
+           owner_contact_name=?,business_phone=?,business_address=?,license_number=?,
+           license_type=?,insurance_provider=?,insurance_expiration=?,business_registration=?,
+           identity_verified=?,license_verified=?,license_active_verified=?,
+           insurance_verified=?,registration_verified=?,terms_accepted=?
+           WHERE id=?""",
         (
-            (name or BUSINESS_NAME).strip(),
-            (services or "").strip(),
-            (service_area or "").strip(),
-            (email or "").strip(),
-            (alert_phone or "").strip(),
-            1 if str(routing_enabled) in ("1", "true", "on", "yes") else 0,
-            max(0, min(int(routing_priority or 0), 2)),
-            max(0, int(daily_lead_cap or 0)),
+            (name or BUSINESS_NAME).strip(), (services or "").strip(),
+            (service_area or "").strip(), (email or "").strip(), (alert_phone or "").strip(),
+            1 if str(routing_enabled) in ("1","true","on","yes") else 0,
+            max(0,min(int(routing_priority or 0),2)), max(0,int(daily_lead_cap or 0)),
+            verification_status if verification_status in ("Pending","Verified","Rejected","Expired") else "Pending",
+            1 if str(test_business) in ("1","true","on","yes") else 0,
+            (legal_business_name or "").strip(), (dba_name or "").strip(),
+            (owner_contact_name or "").strip(), (business_phone or "").strip(),
+            (business_address or "").strip(), (license_number or "").strip(),
+            (license_type or "").strip(), (insurance_provider or "").strip(),
+            (insurance_expiration or "").strip(), (business_registration or "").strip(),
+            1 if str(identity_verified) in ("1","true","on","yes") else 0,
+            1 if str(license_verified) in ("1","true","on","yes") else 0,
+            1 if str(license_active_verified) in ("1","true","on","yes") else 0,
+            1 if str(insurance_verified) in ("1","true","on","yes") else 0,
+            1 if str(registration_verified) in ("1","true","on","yes") else 0,
+            1 if str(terms_accepted) in ("1","true","on","yes") else 0,
             business_id
         )
     )
     con.commit()
     con.close()
+
+
+def effective_verification_status(business):
+    status = (business.get("verification_status") or "Pending").strip()
+    if status == "Verified":
+        expiry = (business.get("insurance_expiration") or "").strip()
+        if expiry:
+            try:
+                if datetime.strptime(expiry, "%Y-%m-%d").date() < datetime.utcnow().date():
+                    return "Expired"
+            except ValueError:
+                pass
+    return status
+
+
+def business_is_marketplace_eligible(business):
+    if int(business.get("test_business") or 0) == 1:
+        return True
+    return effective_verification_status(business) == "Verified"
+
 
 def settings_html(saved=False, business_id=BUSINESS_ID):
     s = get_business_settings(business_id)
@@ -305,6 +417,42 @@ LeadPilot now uses these settings when answering customers about the business, s
 <input name="daily_lead_cap" type="number" min="0" value="{s['daily_lead_cap']}">
 <div class="hint">0 means unlimited. Once the cap is reached, LeadPilot skips this business until the next UTC day.</div>
 
+
+<div style="margin-top:24px;padding-top:18px;border-top:1px solid #e4e7ec">
+<h2 style="margin:0 0 8px">LeadPilot Verification</h2>
+<div class="hint">Real businesses must be Verified to receive marketplace leads. Test businesses can route during beta but never display a Verified badge.</div>
+<label>Verification status</label>
+<select name="verification_status">
+<option value="Pending" {"selected" if s["verification_status"]=="Pending" else ""}>Pending</option>
+<option value="Verified" {"selected" if s["verification_status"]=="Verified" else ""}>Verified</option>
+<option value="Rejected" {"selected" if s["verification_status"]=="Rejected" else ""}>Rejected</option>
+<option value="Expired" {"selected" if s["verification_status"]=="Expired" else ""}>Expired</option>
+</select>
+<label>Account type</label>
+<select name="test_business">
+<option value="0" {"selected" if not s["test_business"] else ""}>Real business</option>
+<option value="1" {"selected" if s["test_business"] else ""}>Test business</option>
+</select>
+<label>Legal business name</label><input name="legal_business_name" value="{esc(s['legal_business_name'], quote=True)}">
+<label>DBA / public name</label><input name="dba_name" value="{esc(s['dba_name'], quote=True)}">
+<label>Owner / contact</label><input name="owner_contact_name" value="{esc(s['owner_contact_name'], quote=True)}">
+<label>Business phone</label><input name="business_phone" value="{esc(s['business_phone'], quote=True)}">
+<label>Business address</label><input name="business_address" value="{esc(s['business_address'], quote=True)}">
+<label>License number</label><input name="license_number" value="{esc(s['license_number'], quote=True)}">
+<label>License type</label><input name="license_type" value="{esc(s['license_type'], quote=True)}">
+<label>Insurance provider</label><input name="insurance_provider" value="{esc(s['insurance_provider'], quote=True)}">
+<label>Insurance expiration</label><input type="date" name="insurance_expiration" value="{esc(s['insurance_expiration'], quote=True)}">
+<label>Business registration / Sunbiz reference</label><input name="business_registration" value="{esc(s['business_registration'], quote=True)}">
+<div style="margin-top:16px;background:#f8fafc;padding:14px;border-radius:12px">
+<strong>Admin verification checklist</strong>
+<label><input style="width:auto" type="checkbox" name="identity_verified" value="1" {"checked" if s["identity_verified"] else ""}> Business identity verified</label>
+<label><input style="width:auto" type="checkbox" name="license_verified" value="1" {"checked" if s["license_verified"] else ""}> Trade license verified</label>
+<label><input style="width:auto" type="checkbox" name="license_active_verified" value="1" {"checked" if s["license_active_verified"] else ""}> License active</label>
+<label><input style="width:auto" type="checkbox" name="insurance_verified" value="1" {"checked" if s["insurance_verified"] else ""}> Insurance verified</label>
+<label><input style="width:auto" type="checkbox" name="registration_verified" value="1" {"checked" if s["registration_verified"] else ""}> Registration verified</label>
+<label><input style="width:auto" type="checkbox" name="terms_accepted" value="1" {"checked" if s["terms_accepted"] else ""}> Provider terms accepted</label>
+</div>
+</div>
 <button type="submit">Save business settings</button>
 </form>
 </div>
@@ -316,7 +464,7 @@ def list_businesses():
     con = db()
     rows = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until FROM businesses ORDER BY id"
+        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until,verification_status,test_business,legal_business_name,dba_name,owner_contact_name,business_phone,business_address,license_number,license_type,insurance_provider,insurance_expiration,business_registration,identity_verified,license_verified,license_active_verified,insurance_verified,registration_verified,terms_accepted FROM businesses ORDER BY id"
     ).fetchall()
 
     enriched = []
@@ -337,8 +485,8 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
 
     execute(
         con,
-        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until,verification_status,test_business)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             int(new_id),
             (name or f"Business {new_id}").strip(),
@@ -346,11 +494,7 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
             (service_area or "").strip(),
             (email or "").strip(),
             (alert_phone or "").strip(),
-            1,
-            0,
-            0,
-            "",
-            ""
+            1, 0, 0, "", "", "Pending", 0
         )
     )
     con.commit()
@@ -368,7 +512,8 @@ def businesses_html(created_id=None):
           <div><strong>{html.escape(r['name'] or 'Unnamed business')}</strong>
           <span>{html.escape(r['service_area'] or 'No service area yet')}</span>
           <span>{"Accepting leads" if r["routing_enabled"] else "Routing paused"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span>
-          <span>Routing health {metrics["health"]}/100 · Leads today {metrics["today_count"]} · Open New {metrics["new_count"]}</span></div>
+          <span>Routing health {metrics["health"]}/100 · Leads today {metrics["today_count"]} · Open New {metrics["new_count"]}</span>
+          <span>{"🧪 Test Business" if r["test_business"] else ("🛡️ LeadPilot Verified" if effective_verification_status(dict(r))=="Verified" else "Verification: "+effective_verification_status(dict(r)))}</span></div>
           <div class="bizlinks">
             <a href="/b/{bid}">Customer page</a>
             <a href="/dashboard?business={bid}">Dashboard</a>
@@ -721,7 +866,12 @@ def match_business_for_lead(service, location, reserve=True):
         con,
         """SELECT id,name,services,service_area,email,alert_phone,
                   routing_enabled,routing_priority,daily_lead_cap,
-                  last_routed_at,reserved_until
+                  last_routed_at,reserved_until,verification_status,test_business,
+                  legal_business_name,dba_name,owner_contact_name,business_phone,
+                  business_address,license_number,license_type,insurance_provider,
+                  insurance_expiration,business_registration,identity_verified,
+                  license_verified,license_active_verified,insurance_verified,
+                  registration_verified,terms_accepted
            FROM businesses
            ORDER BY id"""
     ).fetchall()
@@ -731,6 +881,8 @@ def match_business_for_lead(service, location, reserve=True):
 
     for b in businesses:
         if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
+            continue
+        if not business_is_marketplace_eligible(dict(b)):
             continue
         if not business_supports_service(b, service):
             continue
@@ -821,6 +973,10 @@ def routing_diagnostics(service, location):
         if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
             eligible = False
             reasons.append("paused")
+
+        if not business_is_marketplace_eligible(dict(b)):
+            eligible = False
+            reasons.append("not verified")
 
         if not business_supports_service(b, service):
             eligible = False
@@ -2682,14 +2838,30 @@ class Handler(BaseHTTPRequestHandler):
                     business_id = BUSINESS_ID
 
                 save_business_settings(
-                    form.get("name", ""),
-                    form.get("services", ""),
-                    form.get("service_area", ""),
-                    form.get("email", ""),
+                    form.get("name", ""), form.get("services", ""),
+                    form.get("service_area", ""), form.get("email", ""),
                     form.get("alert_phone", ""),
                     routing_enabled=form.get("routing_enabled", "1"),
                     routing_priority=form.get("routing_priority", "0"),
                     daily_lead_cap=form.get("daily_lead_cap", "0"),
+                    verification_status=form.get("verification_status", "Pending"),
+                    test_business=form.get("test_business", "0"),
+                    legal_business_name=form.get("legal_business_name", ""),
+                    dba_name=form.get("dba_name", ""),
+                    owner_contact_name=form.get("owner_contact_name", ""),
+                    business_phone=form.get("business_phone", ""),
+                    business_address=form.get("business_address", ""),
+                    license_number=form.get("license_number", ""),
+                    license_type=form.get("license_type", ""),
+                    insurance_provider=form.get("insurance_provider", ""),
+                    insurance_expiration=form.get("insurance_expiration", ""),
+                    business_registration=form.get("business_registration", ""),
+                    identity_verified=form.get("identity_verified", "0"),
+                    license_verified=form.get("license_verified", "0"),
+                    license_active_verified=form.get("license_active_verified", "0"),
+                    insurance_verified=form.get("insurance_verified", "0"),
+                    registration_verified=form.get("registration_verified", "0"),
+                    terms_accepted=form.get("terms_accepted", "0"),
                     business_id=business_id
                 )
                 self.redirect(f"/settings?business={business_id}&saved=1")
