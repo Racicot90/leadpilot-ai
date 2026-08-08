@@ -318,8 +318,14 @@ def list_businesses():
         con,
         "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until FROM businesses ORDER BY id"
     ).fetchall()
+
+    enriched = []
+    for r in rows:
+        metrics = business_routing_metrics(con, int(r["id"]))
+        enriched.append((r, metrics))
+
     con.close()
-    return rows
+    return enriched
 
 
 def create_business(name, services="", service_area="", email="", alert_phone=""):
@@ -355,13 +361,14 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
 def businesses_html(created_id=None):
     rows = list_businesses()
     items = ""
-    for r in rows:
+    for r, metrics in rows:
         bid = r["id"]
         items += f"""
         <div class="biz">
           <div><strong>{html.escape(r['name'] or 'Unnamed business')}</strong>
           <span>{html.escape(r['service_area'] or 'No service area yet')}</span>
-          <span>{"Accepting leads" if r["routing_enabled"] else "Routing paused"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span></div>
+          <span>{"Accepting leads" if r["routing_enabled"] else "Routing paused"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span>
+          <span>Routing health {metrics["health"]}/100 · Leads today {metrics["today_count"]} · Open New {metrics["new_count"]}</span></div>
           <div class="bizlinks">
             <a href="/b/{bid}">Customer page</a>
             <a href="/dashboard?business={bid}">Dashboard</a>
@@ -608,25 +615,102 @@ def reserve_business_turn(business_id, minutes=15):
     con.close()
 
 
+def business_routing_metrics(con, business_id):
+    """
+    Calculate lightweight performance signals from the business's own lead history.
+
+    We intentionally keep this beta-safe:
+    - New businesses are not punished for having little/no history.
+    - Booked/Closed leads count as successful outcomes.
+    - A large untouched New backlog lowers the score.
+    - Today's lead count lowers the score to preserve distribution fairness.
+    """
+    rows = execute(
+        con,
+        """SELECT status, created_at
+           FROM leads
+           WHERE business_id=?
+           ORDER BY id DESC
+           LIMIT 100""",
+        (business_id,)
+    ).fetchall()
+
+    total = len(rows)
+    new_count = 0
+    contacted = 0
+    successes = 0
+    overdue_new = 0
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today_count = 0
+
+    for r in rows:
+        status = (r["status"] or "New").strip()
+        if (r["created_at"] or "").startswith(today):
+            today_count += 1
+
+        if status == "New":
+            new_count += 1
+            # A New lead older than 30 minutes counts as overdue for routing health.
+            raw = (r["created_at"] or "").strip()
+            created = _parse_utc_timestamp(raw)
+            if created and (datetime.utcnow() - created).total_seconds() >= 1800:
+                overdue_new += 1
+        else:
+            contacted += 1
+
+        if status in ("Booked", "Closed"):
+            successes += 1
+
+    if total == 0:
+        engagement_rate = 1.0
+        success_rate = 0.5
+    else:
+        engagement_rate = contacted / total
+        success_rate = successes / total
+
+    # 0-100 operational health score. New businesses begin around 70.
+    if total < 3:
+        health = 70
+    else:
+        health = int(
+            45
+            + (engagement_rate * 30)
+            + (success_rate * 25)
+            - min(new_count * 2, 14)
+            - min(overdue_new * 5, 20)
+        )
+
+    health = max(0, min(100, health))
+
+    return {
+        "total": total,
+        "today_count": today_count,
+        "new_count": new_count,
+        "overdue_new": overdue_new,
+        "engagement_rate": engagement_rate,
+        "success_rate": success_rate,
+        "health": health,
+    }
+
+
 def match_business_for_lead(service, location, reserve=True):
     """
-    True Round-Robin Routing V3.
+    LeadPilot Intelligent Routing V4.
 
     Eligibility:
       1. Marketplace routing enabled.
       2. Requested service offered.
       3. Florida territory match.
       4. Daily lead cap not reached.
-      5. Active routing reservations are skipped if any unreserved match exists.
 
-    Ranking:
-      1. Higher priority first.
-      2. Fewer completed leads today.
-      3. Never/least recently routed first.
-      4. Business ID as stable tie-breaker.
+    Distribution:
+      1. Active reservations are skipped when another eligible business is free.
+      2. Priority tier matters.
+      3. Healthy/responsive businesses receive a modest performance advantage.
+      4. Heavy current backlog and today's lead count reduce ranking.
+      5. Least-recently-routed breaks close ties.
 
-    A selected business is reserved immediately for 15 minutes, so simply
-    previewing a match advances the rotation. Reservations expire automatically.
+    This keeps routing fair while rewarding businesses that actually work their leads.
     """
     resolved = resolve_florida_location(location)
     if not resolved:
@@ -642,9 +726,7 @@ def match_business_for_lead(service, location, reserve=True):
            ORDER BY id"""
     ).fetchall()
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
-
     eligible = []
 
     for b in businesses:
@@ -655,17 +737,10 @@ def match_business_for_lead(service, location, reserve=True):
         if not business_serves_location(b, resolved):
             continue
 
-        today_row = execute(
-            con,
-            """SELECT COUNT(*) AS c
-               FROM leads
-               WHERE business_id=? AND substr(created_at,1,10)=?""",
-            (b["id"], today)
-        ).fetchone()
-        today_count = int(today_row["c"] or 0)
+        metrics = business_routing_metrics(con, int(b["id"]))
 
         cap = int(b["daily_lead_cap"] or 0)
-        if cap > 0 and today_count >= cap:
+        if cap > 0 and metrics["today_count"] >= cap:
             continue
 
         priority = int(b["routing_priority"] or 0)
@@ -673,12 +748,27 @@ def match_business_for_lead(service, location, reserve=True):
         reserved_until = _parse_utc_timestamp(b["reserved_until"])
         is_reserved = reserved_until is not None and reserved_until > now
 
+        # Routing score: tier is important, but performance/fairness still matter.
+        # Standard=0, Priority=1, Premium=2.
+        routing_score = (
+            priority * 100
+            + metrics["health"] * 0.35
+            - metrics["today_count"] * 12
+            - metrics["new_count"] * 3
+            - metrics["overdue_new"] * 7
+        )
+
+        # Give brand-new businesses a small exploration boost so they can earn history.
+        if metrics["total"] < 3:
+            routing_score += 8
+
         eligible.append({
             "business": b,
-            "today_count": today_count,
+            "metrics": metrics,
             "priority": priority,
             "last_routed": last_routed,
-            "is_reserved": is_reserved
+            "is_reserved": is_reserved,
+            "routing_score": routing_score,
         })
 
     con.close()
@@ -686,23 +776,20 @@ def match_business_for_lead(service, location, reserve=True):
     if not eligible:
         return None, resolved
 
-    # Prefer unreserved businesses when at least one exists.
+    # A reservation represents a business that just got the current routing turn.
     pool = [e for e in eligible if not e["is_reserved"]]
     if not pool:
         pool = eligible
 
-    ranked = []
-    for e in pool:
-        ranked.append((
-            -e["priority"],
-            e["today_count"],
+    # Highest score wins. For near-equal scores, least recently routed wins.
+    pool.sort(
+        key=lambda e: (
+            -round(e["routing_score"], 2),
             e["last_routed"],
-            int(e["business"]["id"]),
-            e["business"]
-        ))
-
-    ranked.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
-    selected = ranked[0][4]
+            int(e["business"]["id"])
+        )
+    )
+    selected = pool[0]["business"]
 
     if reserve:
         reserve_business_turn(int(selected["id"]), minutes=15)
@@ -711,7 +798,7 @@ def match_business_for_lead(service, location, reserve=True):
 
 
 def routing_diagnostics(service, location):
-    """Return a plain-text routing explanation for beta troubleshooting."""
+    """Explain marketplace eligibility and routing health for beta troubleshooting."""
     resolved = resolve_florida_location(location)
     if not resolved:
         return ["Location could not be resolved."]
@@ -724,7 +811,6 @@ def routing_diagnostics(service, location):
            FROM businesses ORDER BY id"""
     ).fetchall()
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
     lines = []
 
@@ -744,15 +830,9 @@ def routing_diagnostics(service, location):
             eligible = False
             reasons.append("location mismatch")
 
-        today_row = execute(
-            con,
-            "SELECT COUNT(*) AS c FROM leads WHERE business_id=? AND substr(created_at,1,10)=?",
-            (b["id"], today)
-        ).fetchone()
-        today_count = int(today_row["c"] or 0)
-
+        metrics = business_routing_metrics(con, int(b["id"]))
         cap = int(b["daily_lead_cap"] or 0)
-        if cap > 0 and today_count >= cap:
+        if cap > 0 and metrics["today_count"] >= cap:
             eligible = False
             reasons.append("daily cap reached")
 
@@ -760,10 +840,21 @@ def routing_diagnostics(service, location):
         if reserved_until and reserved_until > now:
             reasons.append(f"reserved until {reserved_until.strftime('%H:%M:%S')} UTC")
 
+        priority = int(b["routing_priority"] or 0)
+        routing_score = (
+            priority * 100
+            + metrics["health"] * 0.35
+            - metrics["today_count"] * 12
+            - metrics["new_count"] * 3
+            - metrics["overdue_new"] * 7
+            + (8 if metrics["total"] < 3 else 0)
+        )
+
         status = "eligible" if eligible else "not eligible"
         lines.append(
-            f"{b['name']}: {status}; priority={int(b['routing_priority'] or 0)}; "
-            f"today={today_count}; last={b['last_routed_at'] or 'never'}; "
+            f"{b['name']}: {status}; tier={priority}; health={metrics['health']}/100; "
+            f"today={metrics['today_count']}; new={metrics['new_count']}; "
+            f"overdue={metrics['overdue_new']}; routing_score={routing_score:.1f}; "
             + (", ".join(reasons) if reasons else "ready")
         )
 
@@ -1493,7 +1584,7 @@ def send_twilio_body(to_phone, body):
 def run_lead_chase_once():
     """Send reminder alerts for overdue Hot leads across all businesses."""
     try:
-        for business in list_businesses():
+        for business, _metrics in list_businesses():
             business_id = int(business["id"])
             alert_phone = (business["alert_phone"] or NOTIFY_PHONE or "").strip()
             if not alert_phone:
@@ -2121,6 +2212,7 @@ def dashboard_html(business_id=BUSINESS_ID):
         (business_id,)
     ).fetchall()
 
+    routing_metrics = business_routing_metrics(con, business_id)
     con.close()
 
     counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
@@ -2268,6 +2360,10 @@ h1{{font-size:28px;margin:0}}
 .priority-pill strong{{display:block;font-size:20px}}
 .priority-pill span{{font-size:11px;color:#667085}}
 .priority-note{{font-size:12px;color:#667085;margin:-5px 0 14px}}
+.routing-health{{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
+.routing-health span{{display:block;font-size:12px;color:#667085}}
+.routing-health strong{{font-size:28px}}
+.routing-health p{{margin:0;color:#667085;font-size:12px;text-align:right}}
 .followup-summary{{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
 .followup-summary span{{display:block;font-size:12px;color:#667085}}
 .followup-summary strong{{font-size:28px}}
@@ -2333,6 +2429,14 @@ h1{{font-size:28px;margin:0}}
 <div class="stat"><span>Contacted</span><b>{counts.get('Contacted',0)}</b></div>
 <div class="stat"><span>Booked</span><b>{counts.get('Booked',0)}</b></div>
 <div class="stat"><span>Closed</span><b>{counts.get('Closed',0)}</b></div>
+</div>
+
+<div class="routing-health">
+  <div>
+    <span>Marketplace routing health</span>
+    <strong>{routing_metrics["health"]}/100</strong>
+  </div>
+  <p>{routing_metrics["today_count"]} lead(s) today · {routing_metrics["new_count"]} still New · {routing_metrics["overdue_new"]} overdue</p>
 </div>
 
 <div class="followup-summary">
