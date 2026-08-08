@@ -1414,6 +1414,16 @@ def _extract_name(value):
     return ""
 
 def assistant_reply(message, context=None, business_id=BUSINESS_ID):
+    """
+    Dedicated business-page flow.
+
+    Important rule:
+    Problem -> location verification -> confirm this business -> name -> phone -> email.
+
+    The chat must NOT tell a customer that the request is "for" the business until
+    LeadPilot confirms that the business is eligible, offers the service, and covers
+    the customer's location.
+    """
     business = get_business_settings(business_id)
     context = context or {}
 
@@ -1428,13 +1438,13 @@ def assistant_reply(message, context=None, business_id=BUSINESS_ID):
             "customer_phone": "",
             "customer_email": "",
             "customer_zip": "",
+            "customer_location": "",
             "matched_business_id": 0,
             "business_name": ""
         }
 
     business_name = business.get("name") or BUSINESS_NAME
     services_raw = business.get("services") or ""
-    service_area = business.get("service_area") or ""
     services = [s.strip() for s in services_raw.split(",") if s.strip()]
     services_lower = [s.lower() for s in services]
 
@@ -1442,263 +1452,197 @@ def assistant_reply(message, context=None, business_id=BUSINESS_ID):
     msg_lower = msg.lower()
 
     intake_step = (context.get("intake_step") or "").strip()
+    service = (context.get("service") or "").strip()
+    urgency = (context.get("urgency") or "Normal").strip()
+    issue = (context.get("issue") or "").strip()
     customer_name = (context.get("customer_name") or "").strip()
     customer_phone = (context.get("customer_phone") or "").strip()
     customer_email = (context.get("customer_email") or "").strip()
     customer_zip = (context.get("customer_zip") or "").strip()
+    customer_location = (context.get("customer_location") or "").strip()
 
-    if intake_step:
-        service0 = context.get("service", "")
-        urgency0 = context.get("urgency", "")
-        issue0 = context.get("issue", "")
+    if intake_step == "location":
+        resolved = resolve_florida_location(msg)
+        if not resolved:
+            return {
+                "reply": "I couldn't verify that as a Florida city or ZIP code. Please send the city or 5-digit ZIP code where the job is located.",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "location",
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "customer_email": customer_email,
+                "customer_zip": "",
+                "customer_location": msg,
+                "matched_business_id": 0,
+                "business_name": ""
+            }
 
-        if intake_step == "name":
-            parsed = _extract_name(msg)
-            if not parsed:
-                reply = "I just need your name first. What name should I put on the request?"
-            else:
-                customer_name = parsed
-                intake_step = "phone"
-                reply = f"Thanks, {customer_name}. What's the best phone number for the business to reach you?"
+        customer_location = msg
+        customer_zip = resolved.get("postcode") or msg
+        place = resolved.get("display") or msg
 
-        elif intake_step == "phone":
-            parsed = _extract_phone(msg)
-            if not parsed:
-                reply = "Please send a 10-digit phone number so the business can contact you."
-            else:
-                customer_phone = parsed
-                intake_step = "email"
-                reply = "Got it. What's your email address? You can type SKIP if you'd rather not provide one."
-
-        elif intake_step == "email":
-            if msg_lower == "skip":
-                customer_email = ""
-                intake_step = "zip"
-                reply = "No problem. What's the ZIP code for the job?"
-            else:
-                parsed = _extract_email(msg)
-                if not parsed:
-                    reply = "That doesn't look like an email address. Please try again, or type SKIP."
-                else:
-                    customer_email = parsed
-                    intake_step = "zip"
-                    reply = "Thanks. What's the ZIP code for the job?"
-
-        elif intake_step == "zip":
-            parsed = _extract_zip(msg)
-            if not parsed:
-                reply = "Please send the 5-digit ZIP code for the job."
-            else:
-                customer_zip = parsed
-                intake_step = "ready"
-                reply = (
-                    f"Perfect. I have your {service0.lower() or 'service'} request ready for {customer_name}. "
-                    "Your information has been filled into the request form below. Tap Submit Request to send it."
-                )
-        else:
-            reply = "Your request is ready to submit."
+        if not business_serves_location(business, resolved):
+            return {
+                "reply": (
+                    f"I recognize {place}, but this provider does not currently list that area "
+                    "as part of its LeadPilot service territory. Please return to LeadPilot and "
+                    "I'll match you with another available provider."
+                ),
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "outside_area",
+                "customer_name": "",
+                "customer_phone": "",
+                "customer_email": "",
+                "customer_zip": customer_zip,
+                "customer_location": customer_location,
+                "matched_business_id": 0,
+                "business_name": ""
+            }
 
         return {
-            "reply": reply,
-            "service": service0,
-            "urgency": urgency0,
-            "issue": issue0,
-            "intake_step": intake_step,
-            "customer_name": customer_name,
-            "customer_phone": customer_phone,
-            "customer_email": customer_email,
-            "customer_zip": customer_zip
+            "reply": (
+                f"Yes — {business_name} serves {place} and offers {service}. "
+                "What's your name?"
+            ),
+            "service": service,
+            "urgency": urgency,
+            "issue": issue,
+            "intake_step": "name",
+            "customer_name": "",
+            "customer_phone": "",
+            "customer_email": "",
+            "customer_zip": customer_zip,
+            "customer_location": customer_location,
+            "matched_business_id": business_id,
+            "business_name": business_name
         }
 
-    detected_service, detected_urgency = classify(msg)
-    prior_service = (context.get("service") or "").strip()
-    prior_urgency = (context.get("urgency") or "").strip()
-    prior_issue = (context.get("issue") or "").strip()
+    if intake_step == "name":
+        parsed = _extract_name(msg)
+        if not parsed:
+            reply = "I just need your name first. What name should I put on the request?"
+        else:
+            customer_name = parsed
+            intake_step = "phone"
+            reply = f"Thanks, {customer_name}. What's the best 10-digit phone number to reach you?"
 
-    # Common location-answer patterns.
-    location_phrases = [
-        "i'm in ", "im in ", "i am in ", "located in ", "my zip is ",
-        "zip is ", "i live in ", "we're in ", "were in ",
-        "i'm on ", "im on ", "i am on "
-    ]
+    elif intake_step == "phone":
+        parsed = _extract_phone(msg)
+        if not parsed:
+            reply = "Please send a 10-digit phone number so the business can contact you."
+        else:
+            customer_phone = parsed
+            intake_step = "email"
+            reply = "Got it. What's your email address? You can type SKIP if you'd rather not provide one."
 
-    looks_like_zip = msg.replace("-", "").isdigit() and 4 <= len(msg.replace("-", "")) <= 10
-    looks_like_location_followup = (
-        bool(prior_service)
-        and (
-            any(p in msg_lower for p in location_phrases)
-            or looks_like_zip
-            or (
-                len(msg.split()) <= 5
-                and detected_service == "General Repair"
-                and detected_urgency == "Normal"
+    elif intake_step == "email":
+        if msg_lower == "skip":
+            customer_email = ""
+            intake_step = "ready"
+            reply = (
+                f"Perfect. Your {service.lower()} request is ready for {business_name}. "
+                "Your information is filled into the request form below. Tap Submit Request to send it."
             )
-        )
-    )
+        else:
+            parsed = _extract_email(msg)
+            if not parsed:
+                reply = "That doesn't look like an email address. Please try again, or type SKIP."
+            else:
+                customer_email = parsed
+                intake_step = "ready"
+                reply = (
+                    f"Perfect. Your {service.lower()} request is ready for {business_name}. "
+                    "Your information is filled into the request form below. Tap Submit Request to send it."
+                )
 
-    service = prior_service if looks_like_location_followup and prior_service else detected_service
-    urgency = prior_urgency if looks_like_location_followup and prior_urgency else detected_urgency
-    issue = prior_issue if looks_like_location_followup and prior_issue else msg
+    elif intake_step in ("ready", "outside_area", "blocked"):
+        if intake_step == "outside_area":
+            reply = "Please return to LeadPilot so I can match you with another provider that serves your area."
+        elif intake_step == "blocked":
+            reply = "This provider is not currently eligible to receive new requests."
+        else:
+            reply = f"Your request is ready to submit to {business_name}."
 
-    service_supported = True
-    if services and service != "General Repair":
+    else:
+        detected_service, detected_urgency = classify(msg)
+        service = detected_service
+        urgency = detected_urgency
+        issue = msg
+
+        if service == "General Repair":
+            return {
+                "reply": "What type of work do you need — HVAC, plumbing, electrical, roofing, or something else?",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "",
+                "customer_name": "",
+                "customer_phone": "",
+                "customer_email": "",
+                "customer_zip": "",
+                "customer_location": "",
+                "matched_business_id": 0,
+                "business_name": ""
+            }
+
         service_supported = any(
             service.lower() in s or s in service.lower()
             for s in services_lower
-        )
+        ) if services else True
 
-    location_question = any(
-        phrase in msg_lower
-        for phrase in [
-            "do you service", "do you serve", "service area", "come to",
-            "travel to", "available in", "work in"
-        ]
-    )
+        if not service_supported:
+            offered = ", ".join(services) or "its listed services"
+            return {
+                "reply": (
+                    f"This provider currently lists {offered}. Your request sounds like {service}. "
+                    "Please return to LeadPilot and I'll match you with a provider for that service."
+                ),
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "blocked",
+                "customer_name": "",
+                "customer_phone": "",
+                "customer_email": "",
+                "customer_zip": "",
+                "customer_location": "",
+                "matched_business_id": 0,
+                "business_name": ""
+            }
 
-    stated_location = msg
-    for prefix in location_phrases:
-        pos = msg_lower.find(prefix)
-        if pos >= 0:
-            stated_location = msg[pos + len(prefix):].strip(" .?!,")
-            break
-
-    # Normalize common Florida place-name variations.
-    def normalize_place(s):
-        s = (s or "").lower().strip()
-        replacements = {
-            "st. ": "saint ",
-            "st ": "saint ",
-            "county of ": "",
-            "saint johns co": "saint johns county",
-            "st johns co": "saint johns county",
+        # Do NOT name the business yet. Location comes first.
+        return {
+            "reply": f"Got it — that sounds like {service}. What Florida city or ZIP code is the job in?",
+            "service": service,
+            "urgency": urgency,
+            "issue": issue,
+            "intake_step": "location",
+            "customer_name": "",
+            "customer_phone": "",
+            "customer_email": "",
+            "customer_zip": "",
+            "customer_location": "",
+            "matched_business_id": 0,
+            "business_name": ""
         }
-        for a, b in replacements.items():
-            s = s.replace(a, b)
-        s = " ".join(s.split())
-        return s
-
-    normalized_area = normalize_place(service_area)
-    normalized_location = normalize_place(stated_location)
-
-    # Known place aliases for the first specialty market.
-    # This is intentionally explicit and editable rather than pretending
-    # we have a full geocoder.
-    area_aliases = {
-        "saint johns county": [
-            "saint augustine",
-            "saint augustine beach",
-            "elkton",
-            "ponte vedra",
-            "ponte vedra beach",
-            "nocatee",
-            "fruit cove",
-            "switzerland",
-            "hastings",
-            "vilano beach",
-            "butler beach",
-            "crescent beach"
-        ],
-        "jacksonville": [
-            "jacksonville",
-            "jacksonville beach",
-            "atlantic beach",
-            "neptune beach"
-        ]
-    }
-
-    def location_matches_area(location, area_text):
-        if not location or not area_text:
-            return False
-
-        if location in area_text:
-            return True
-
-        # Match any comma-separated configured area entry.
-        configured_parts = [normalize_place(p) for p in area_text.split(",") if p.strip()]
-        for part in configured_parts:
-            if location == part or location in part or part in location:
-                return True
-
-        # Match known towns/cities inside a configured county/metro label.
-        for configured_name, aliases in area_aliases.items():
-            if configured_name in area_text:
-                for alias in aliases:
-                    if location == alias or location.startswith(alias + " "):
-                        return True
-
-        return False
-
-    if looks_like_location_followup and service_area:
-        in_listed_area = location_matches_area(normalized_location, normalized_area)
-
-        if in_listed_area:
-            reply = (
-                f"Yes — {stated_location} appears to be inside {business_name}'s listed "
-                f"service area ({service_area}). Your {service.lower()} request can be "
-                "submitted below so the business can follow up."
-            )
-        else:
-            reply = (
-                f"{stated_location} does not appear to be inside {business_name}'s listed "
-                f"service area ({service_area}). I can still submit your {service.lower()} "
-                "request so the business can confirm whether they can travel to you."
-            )
-
-    elif location_question and service_area:
-        reply = (
-            f"{business_name} currently lists its service area as {service_area}. "
-            "Tell me your city or ZIP code and I can compare it with the listed area."
-        )
-
-    elif not service_supported:
-        offered = ", ".join(services)
-        reply = (
-            f"{business_name} currently lists these services: {offered}. "
-            f"Your request sounds like {service}. I can still send the details "
-            "to the business so they can confirm whether they can help."
-        )
-
-    elif urgency == "Emergency":
-        reply = (
-            f"This may be an emergency {service.lower()} issue for {business_name}. "
-            "If there is fire, a suspected gas leak, dangerous electrical arcing, "
-            "or immediate danger, leave the area and contact the appropriate emergency "
-            "or utility service. I can still collect your information for urgent follow-up."
-        )
-
-    elif urgency == "High":
-        reply = (
-            f"That sounds like a high-priority {service} request for {business_name}. "
-            "Please fill in your contact information below so the business can follow up "
-            "as soon as possible."
-        )
-
-    else:
-        area_note = f" Their listed service area is {service_area}." if service_area else ""
-        reply = (
-            f"That sounds like a {service} request for {business_name}.{area_note} "
-            "I can collect your contact information right here. What's your name?"
-        )
 
     return {
         "reply": reply,
         "service": service,
         "urgency": urgency,
         "issue": issue,
-        "business_name": business_name,
-        "service_area": service_area,
-        "services": services,
-        "intake_step": (
-            "name"
-            if service != "General Repair"
-            and not looks_like_location_followup
-            and not location_question
-            else ""
-        ),
-        "customer_name": "",
-        "customer_phone": "",
-        "customer_email": "",
-        "customer_zip": ""
+        "intake_step": intake_step,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "customer_email": customer_email,
+        "customer_zip": customer_zip,
+        "customer_location": customer_location,
+        "matched_business_id": business_id if intake_step not in ("outside_area","blocked") else 0,
+        "business_name": business_name if intake_step not in ("outside_area","blocked") else ""
     }
 
 
