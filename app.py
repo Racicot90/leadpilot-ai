@@ -228,6 +228,9 @@ button{{width:100%;padding:14px;border:0;border-radius:10px;background:#172033;c
 <h1>Business Settings</h1>
 <div class="sub">Customize LeadPilot for this business.</div>
 {saved_msg}
+<div style="background:#f7f9fc;border-radius:12px;padding:12px;margin-bottom:16px;font-size:13px;color:#475467">
+LeadPilot now uses these settings when answering customers about the business, services, and service area.
+</div>
 <form method="POST" action="/settings">
 <label>Business name</label>
 <input name="name" value="{esc(s['name'], quote=True)}" required>
@@ -337,23 +340,74 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
     }
 
 def assistant_reply(message):
+    business = get_business_settings()
     service, urgency = classify(message)
 
-    if urgency == "Emergency":
-        reply = (
-            "This may be an emergency. If there is fire, a suspected gas leak, "
-            "dangerous electrical arcing, or immediate danger, leave the area and "
-            "contact the appropriate emergency or utility service. I can still "
-            "collect your information so the business can follow up."
-        )
-    else:
-        reply = (
-            f"That sounds like a {service} request. I can help get this over to "
-            "the service team. Please fill in your contact information below and "
-            "they can follow up with you."
+    business_name = business.get("name") or BUSINESS_NAME
+    services_raw = business.get("services") or ""
+    service_area = business.get("service_area") or ""
+    services = [s.strip() for s in services_raw.split(",") if s.strip()]
+    services_lower = [s.lower() for s in services]
+
+    msg = (message or "").strip()
+    msg_lower = msg.lower()
+
+    service_supported = True
+    if services and service != "General Repair":
+        service_supported = any(
+            service.lower() in s or s in service.lower()
+            for s in services_lower
         )
 
-    return {"reply": reply, "service": service, "urgency": urgency}
+    location_question = any(
+        phrase in msg_lower
+        for phrase in [
+            "do you service", "do you serve", "service area", "come to",
+            "travel to", "available in", "work in"
+        ]
+    )
+
+    if location_question and service_area:
+        reply = (
+            f"{business_name} currently lists its service area as {service_area}. "
+            "Tell me your city or ZIP code and I can include it with your request "
+            "so the business can confirm availability."
+        )
+    elif not service_supported:
+        offered = ", ".join(services)
+        reply = (
+            f"{business_name} currently lists these services: {offered}. "
+            f"Your request sounds like {service}. I can still send the details "
+            "to the business so they can confirm whether they can help."
+        )
+    elif urgency == "Emergency":
+        reply = (
+            f"This may be an emergency {service.lower()} issue for {business_name}. "
+            "If there is fire, a suspected gas leak, dangerous electrical arcing, "
+            "or immediate danger, leave the area and contact the appropriate emergency "
+            "or utility service. I can still collect your information for urgent follow-up."
+        )
+    elif urgency == "High":
+        reply = (
+            f"That sounds like a high-priority {service} request for {business_name}. "
+            "Please fill in your contact information below so the business can follow up "
+            "as soon as possible."
+        )
+    else:
+        area_note = f" Their listed service area is {service_area}." if service_area else ""
+        reply = (
+            f"That sounds like a {service} request for {business_name}.{area_note} "
+            "Please fill in your contact information below and the business can follow up."
+        )
+
+    return {
+        "reply": reply,
+        "service": service,
+        "urgency": urgency,
+        "business_name": business_name,
+        "service_area": service_area,
+        "services": services
+    }
 
 
 def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification):
@@ -613,6 +667,12 @@ button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;co
 </body>
 </html>"""
 
+def customer_page_html():
+    business = get_business_settings()
+    page = INDEX
+    page = page.replace("LeadPilot Demo Services", html.escape(business.get("name") or BUSINESS_NAME))
+    return page
+
 def dashboard_html():
     business = get_business_settings()
     con = db()
@@ -832,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
 
         if p == "/":
-            self.send_bytes(INDEX.encode())
+            self.send_bytes(customer_page_html().encode())
 
         elif p == "/login":
             if logged_in(self.headers):
