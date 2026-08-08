@@ -951,9 +951,22 @@ async function submitLead(){
  const j=await r.json();
 
  if(r.ok){
+   const businessName = document.querySelector('.muted')?.textContent?.trim() || 'the business';
+   const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
    result.className='success';
-   result.textContent='Request received! Lead #'+j.id+' has been created.';
+   result.textContent =
+     `Thanks, ${firstName}. Your ${data.service.toLowerCase()} request has been sent to ${businessName}. ` +
+     `They'll contact you as soon as possible.`;
+
+   add(
+     `Thanks, ${firstName}. Your request has been sent to ${businessName}. ` +
+     `They'll contact you as soon as possible.`,
+     'bot'
+   );
+
+   chatContext.intake_step='complete';
  } else {
+   result.className='';
    result.textContent='Something went wrong. Please try again.';
  }
 }
