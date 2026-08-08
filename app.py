@@ -357,12 +357,13 @@ def assistant_reply(message, context=None):
     prior_urgency = (context.get("urgency") or "").strip()
     prior_issue = (context.get("issue") or "").strip()
 
-    # Recognize short follow-up location answers such as:
-    # "Orlando", "I'm in Orlando", "32259", "St. Augustine".
+    # Common location-answer patterns.
     location_phrases = [
         "i'm in ", "im in ", "i am in ", "located in ", "my zip is ",
-        "zip is ", "i live in ", "we're in ", "were in "
+        "zip is ", "i live in ", "we're in ", "were in ",
+        "i'm on ", "im on ", "i am on "
     ]
+
     looks_like_zip = msg.replace("-", "").isdigit() and 4 <= len(msg.replace("-", "")) <= 10
     looks_like_location_followup = (
         bool(prior_service)
@@ -370,15 +371,13 @@ def assistant_reply(message, context=None):
             any(p in msg_lower for p in location_phrases)
             or looks_like_zip
             or (
-                len(msg.split()) <= 4
+                len(msg.split()) <= 5
                 and detected_service == "General Repair"
                 and detected_urgency == "Normal"
             )
         )
     )
 
-    # Keep the original job context when the customer is merely answering
-    # a follow-up question about location.
     service = prior_service if looks_like_location_followup and prior_service else detected_service
     urgency = prior_urgency if looks_like_location_followup and prior_urgency else detected_urgency
     issue = prior_issue if looks_like_location_followup and prior_issue else msg
@@ -398,8 +397,6 @@ def assistant_reply(message, context=None):
         ]
     )
 
-    # Pull a simple location phrase from the latest message for comparison
-    # with the business's configured service-area text.
     stated_location = msg
     for prefix in location_phrases:
         pos = msg_lower.find(prefix)
@@ -407,31 +404,86 @@ def assistant_reply(message, context=None):
             stated_location = msg[pos + len(prefix):].strip(" .?!,")
             break
 
-    if looks_like_location_followup and service_area:
-        normalized_area = service_area.lower().replace(".", "")
-        normalized_location = stated_location.lower().replace(".", "").strip()
+    # Normalize common Florida place-name variations.
+    def normalize_place(s):
+        s = (s or "").lower().strip()
+        replacements = {
+            "st. ": "saint ",
+            "st ": "saint ",
+            "county of ": "",
+            "saint johns co": "saint johns county",
+            "st johns co": "saint johns county",
+        }
+        for a, b in replacements.items():
+            s = s.replace(a, b)
+        s = " ".join(s.split())
+        return s
 
-        in_listed_area = False
-        if normalized_location:
-            in_listed_area = (
-                normalized_location in normalized_area
-                or any(
-                    part.strip() and part.strip() in normalized_area
-                    for part in normalized_location.split(",")
-                )
-            )
+    normalized_area = normalize_place(service_area)
+    normalized_location = normalize_place(stated_location)
+
+    # Known place aliases for the first specialty market.
+    # This is intentionally explicit and editable rather than pretending
+    # we have a full geocoder.
+    area_aliases = {
+        "saint johns county": [
+            "saint augustine",
+            "saint augustine beach",
+            "elkton",
+            "ponte vedra",
+            "ponte vedra beach",
+            "nocatee",
+            "fruit cove",
+            "switzerland",
+            "hastings",
+            "vilano beach",
+            "butler beach",
+            "crescent beach"
+        ],
+        "jacksonville": [
+            "jacksonville",
+            "jacksonville beach",
+            "atlantic beach",
+            "neptune beach"
+        ]
+    }
+
+    def location_matches_area(location, area_text):
+        if not location or not area_text:
+            return False
+
+        if location in area_text:
+            return True
+
+        # Match any comma-separated configured area entry.
+        configured_parts = [normalize_place(p) for p in area_text.split(",") if p.strip()]
+        for part in configured_parts:
+            if location == part or location in part or part in location:
+                return True
+
+        # Match known towns/cities inside a configured county/metro label.
+        for configured_name, aliases in area_aliases.items():
+            if configured_name in area_text:
+                for alias in aliases:
+                    if location == alias or location.startswith(alias + " "):
+                        return True
+
+        return False
+
+    if looks_like_location_followup and service_area:
+        in_listed_area = location_matches_area(normalized_location, normalized_area)
 
         if in_listed_area:
             reply = (
-                f"Yes — {stated_location} appears to match {business_name}'s listed "
+                f"Yes — {stated_location} appears to be inside {business_name}'s listed "
                 f"service area ({service_area}). Your {service.lower()} request can be "
                 "submitted below so the business can follow up."
             )
         else:
             reply = (
-                f"{stated_location} does not appear in {business_name}'s listed service "
-                f"area ({service_area}). I can still submit your {service.lower()} request "
-                "so the business can confirm whether they can travel to you."
+                f"{stated_location} does not appear to be inside {business_name}'s listed "
+                f"service area ({service_area}). I can still submit your {service.lower()} "
+                "request so the business can confirm whether they can travel to you."
             )
 
     elif location_question and service_area:
