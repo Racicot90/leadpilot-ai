@@ -3,6 +3,7 @@ import json
 import sqlite3
 import hashlib
 import hmac
+import html
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -59,7 +60,11 @@ def init_db():
         execute(con, """
             CREATE TABLE IF NOT EXISTS businesses(
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                services TEXT DEFAULT '',
+                service_area TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                alert_phone TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -83,13 +88,17 @@ def init_db():
         execute(con, """
             INSERT INTO businesses(id, name)
             VALUES(1, ?)
-            ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name
+            ON CONFLICT (id) DO NOTHING
         """, (BUSINESS_NAME,))
     else:
         execute(con, """
             CREATE TABLE IF NOT EXISTS businesses(
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                services TEXT DEFAULT '',
+                service_area TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                alert_phone TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -110,15 +119,23 @@ def init_db():
                 recommended_action TEXT
             )
         """)
-        execute(con, "INSERT OR REPLACE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
+        execute(con, "INSERT OR IGNORE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
 
     # Safe schema upgrades for existing databases.
     if USE_POSTGRES:
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS services TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS alert_phone TEXT DEFAULT ''")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
     else:
         for sql in [
+            "ALTER TABLE businesses ADD COLUMN services TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN service_area TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN email TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN alert_phone TEXT DEFAULT ''",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
             "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
@@ -130,6 +147,111 @@ def init_db():
 
     con.commit()
     con.close()
+
+
+def get_business_settings():
+    con = db()
+    row = execute(
+        con,
+        "SELECT id,name,services,service_area,email,alert_phone FROM businesses WHERE id=?",
+        (BUSINESS_ID,)
+    ).fetchone()
+    con.close()
+
+    if not row:
+        return {
+            "id": BUSINESS_ID,
+            "name": BUSINESS_NAME,
+            "services": "",
+            "service_area": "",
+            "email": "",
+            "alert_phone": NOTIFY_PHONE
+        }
+
+    return {
+        "id": row["id"],
+        "name": row["name"] or BUSINESS_NAME,
+        "services": row["services"] or "",
+        "service_area": row["service_area"] or "",
+        "email": row["email"] or "",
+        "alert_phone": row["alert_phone"] or NOTIFY_PHONE
+    }
+
+def save_business_settings(name, services, service_area, email, alert_phone):
+    con = db()
+    execute(
+        con,
+        "UPDATE businesses SET name=?, services=?, service_area=?, email=?, alert_phone=? WHERE id=?",
+        (
+            (name or BUSINESS_NAME).strip(),
+            (services or "").strip(),
+            (service_area or "").strip(),
+            (email or "").strip(),
+            (alert_phone or "").strip(),
+            BUSINESS_ID
+        )
+    )
+    con.commit()
+    con.close()
+
+def settings_html(saved=False):
+    s = get_business_settings()
+    esc = html.escape
+    saved_msg = '<div class="success">✓ Settings saved</div>' if saved else ''
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot Business Settings</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:680px;margin:auto;padding:18px}}
+.card{{background:#fff;border-radius:20px;padding:22px;box-shadow:0 8px 28px rgba(0,0,0,.07)}}
+h1{{margin:0 0 6px;font-size:28px}}
+.sub{{color:#667085;margin-bottom:20px}}
+label{{display:block;font-weight:800;margin:14px 0 6px}}
+input,textarea{{width:100%;padding:13px;border:1px solid #d0d5dd;border-radius:10px;font-size:16px;font-family:inherit}}
+textarea{{min-height:90px;resize:vertical}}
+.hint{{font-size:12px;color:#667085;margin-top:5px}}
+button{{width:100%;padding:14px;border:0;border-radius:10px;background:#172033;color:#fff;font-weight:800;font-size:16px;margin-top:20px}}
+.links{{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px}}
+.links a{{color:#3448c5;text-decoration:none;font-weight:800}}
+.success{{background:#dcfae6;color:#05603a;padding:11px;border-radius:10px;margin-bottom:14px;font-weight:700}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="links"><a href="/dashboard">← Dashboard</a><a href="/">Customer page</a></div>
+<div class="card">
+<h1>Business Settings</h1>
+<div class="sub">Customize LeadPilot for this business.</div>
+{saved_msg}
+<form method="POST" action="/settings">
+<label>Business name</label>
+<input name="name" value="{esc(s['name'], quote=True)}" required>
+
+<label>Services offered</label>
+<textarea name="services" placeholder="HVAC, plumbing, electrical, roofing...">{esc(s['services'])}</textarea>
+<div class="hint">Separate services with commas.</div>
+
+<label>Service area</label>
+<input name="service_area" value="{esc(s['service_area'], quote=True)}" placeholder="Jacksonville, St. Augustine, ZIP codes...">
+
+<label>Business email</label>
+<input name="email" type="email" value="{esc(s['email'], quote=True)}" placeholder="office@example.com">
+
+<label>Hot-lead alert phone</label>
+<input name="alert_phone" value="{esc(s['alert_phone'], quote=True)}" placeholder="+19045551234">
+<div class="hint">During the Twilio trial, this must be a verified recipient.</div>
+
+<button type="submit">Save business settings</button>
+</form>
+</div>
+</div>
+</body>
+</html>"""
 
 def classify(text):
     t = text.lower()
@@ -239,8 +361,11 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
     if qualification.get("qualification") != "Hot":
         return False
 
+    business = get_business_settings()
+    alert_phone = (business.get("alert_phone") or NOTIFY_PHONE).strip()
+
     if not all([
-        NOTIFY_PHONE,
+        alert_phone,
         TWILIO_PHONE_NUMBER,
         TWILIO_ACCOUNT_SID,
         TWILIO_AUTH_TOKEN
@@ -258,7 +383,7 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
     )
 
     payload = urlencode({
-        "To": NOTIFY_PHONE,
+        "To": alert_phone,
         "From": TWILIO_PHONE_NUMBER,
         "Body": body
     }).encode()
@@ -489,6 +614,7 @@ button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;co
 </html>"""
 
 def dashboard_html():
+    business = get_business_settings()
     con = db()
 
     rows = execute(
@@ -634,11 +760,12 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
 <header>
 <div>
 <h1>LeadPilot AI — Lead Dashboard</h1>
-<div class="sub">{BUSINESS_NAME}</div>
+<div class="sub">{html.escape(business["name"])}</div>
 </div>
 
 <div class="toplinks">
 <a href="/">Customer page</a>
+<a href="/settings">Settings</a>
 <a href="/logout">Log out</a>
 </div>
 </header>
@@ -726,6 +853,14 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_bytes(dashboard_html().encode())
 
+        elif p == "/settings":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+
+            query = parse_qs(urlparse(self.path).query)
+            self.send_bytes(settings_html(saved=query.get("saved") == ["1"]).encode())
+
         elif p == "/health":
             payload = json.dumps({
                 "ok": True,
@@ -783,6 +918,22 @@ class Handler(BaseHTTPRequestHandler):
                         401
                     )
 
+                return
+
+            if p == "/settings":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+
+                form = self.read_form()
+                save_business_settings(
+                    form.get("name", ""),
+                    form.get("services", ""),
+                    form.get("service_area", ""),
+                    form.get("email", ""),
+                    form.get("alert_phone", "")
+                )
+                self.redirect("/settings?saved=1")
                 return
 
             data = self.read_json()
