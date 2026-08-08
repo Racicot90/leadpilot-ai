@@ -350,6 +350,199 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 </div></body></html>"""
 
 
+def normalize_place(value):
+    value = (value or "").lower().strip()
+    replacements = {
+        "st. ": "saint ",
+        "st ": "saint ",
+        "county of ": "",
+    }
+    for a, b in replacements.items():
+        value = value.replace(a, b)
+    return " ".join(value.strip(" .?!,").split())
+
+
+def business_supports_service(business, service):
+    offered = [
+        s.strip().lower()
+        for s in (business["services"] or "").split(",")
+        if s.strip()
+    ]
+    service_l = (service or "").strip().lower()
+    if not offered or not service_l or service_l == "general repair":
+        return False
+    return any(service_l in s or s in service_l for s in offered)
+
+
+def business_serves_location(business, location):
+    area = normalize_place(business["service_area"] or "")
+    loc = normalize_place(location)
+
+    if not area or not loc:
+        return False
+
+    if loc in area:
+        return True
+
+    configured = [
+        normalize_place(p)
+        for p in (business["service_area"] or "").split(",")
+        if p.strip()
+    ]
+    return any(loc == p or loc in p or p in loc for p in configured)
+
+
+def match_business_for_lead(service, location):
+    """Choose an eligible business fairly using lowest lead count, then ID."""
+    con = db()
+    businesses = execute(
+        con,
+        "SELECT id,name,services,service_area,email,alert_phone FROM businesses ORDER BY id"
+    ).fetchall()
+
+    matches = [
+        b for b in businesses
+        if business_supports_service(b, service)
+        and business_serves_location(b, location)
+    ]
+
+    if not matches:
+        con.close()
+        return None
+
+    ranked = []
+    for b in matches:
+        count_row = execute(
+            con,
+            "SELECT COUNT(*) AS c FROM leads WHERE business_id=?",
+            (b["id"],)
+        ).fetchone()
+        ranked.append((int(count_row["c"] or 0), int(b["id"]), b))
+
+    con.close()
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return ranked[0][2]
+
+
+def marketplace_reply(message, context=None):
+    """Business-neutral LeadPilot flow: problem -> location -> match -> contact info."""
+    context = context or {}
+    msg = (message or "").strip()
+    msg_lower = msg.lower()
+
+    step = (context.get("intake_step") or "").strip()
+    service = (context.get("service") or "").strip()
+    urgency = (context.get("urgency") or "").strip()
+    issue = (context.get("issue") or "").strip()
+    customer_name = (context.get("customer_name") or "").strip()
+    customer_phone = (context.get("customer_phone") or "").strip()
+    customer_email = (context.get("customer_email") or "").strip()
+    customer_zip = (context.get("customer_zip") or "").strip()
+    matched_business_id = int(context.get("matched_business_id") or 0)
+    matched_business_name = (context.get("business_name") or "").strip()
+
+    if not step:
+        service, urgency = classify(msg)
+        issue = msg
+
+        if service == "General Repair":
+            return {
+                "reply": "I can help find the right local business. What type of work do you need — HVAC, plumbing, electrical, roofing, or something else?",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "",
+                "matched_business_id": 0
+            }
+
+        return {
+            "reply": f"Got it — that sounds like {service}. What city or ZIP code is the job in?",
+            "service": service,
+            "urgency": urgency,
+            "issue": issue,
+            "intake_step": "location",
+            "matched_business_id": 0
+        }
+
+    if step == "location":
+        location = msg
+        matched = match_business_for_lead(service, location)
+
+        if not matched:
+            return {
+                "reply": f"I don't currently have a {service.lower()} provider in {location}. Try another nearby city or ZIP code, or check back as more businesses join LeadPilot.",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "location",
+                "matched_business_id": 0,
+                "customer_zip": _extract_zip(location)
+            }
+
+        matched_business_id = int(matched["id"])
+        matched_business_name = matched["name"] or "a local provider"
+        customer_zip = _extract_zip(location) or location
+
+        return {
+            "reply": f"I found {matched_business_name}, which serves {location} and offers {service}. What's your name?",
+            "service": service,
+            "urgency": urgency,
+            "issue": issue,
+            "intake_step": "name",
+            "matched_business_id": matched_business_id,
+            "business_name": matched_business_name,
+            "customer_zip": customer_zip
+        }
+
+    if step == "name":
+        parsed = _extract_name(msg)
+        if not parsed:
+            reply = "What name should I put on the request?"
+        else:
+            customer_name = parsed
+            step = "phone"
+            reply = f"Thanks, {customer_name}. What's the best 10-digit phone number to reach you?"
+
+    elif step == "phone":
+        parsed = _extract_phone(msg)
+        if not parsed:
+            reply = "Please send a 10-digit phone number."
+        else:
+            customer_phone = parsed
+            step = "email"
+            reply = "Got it. What's your email address? You can type SKIP if you'd rather not provide one."
+
+    elif step == "email":
+        if msg_lower == "skip":
+            customer_email = ""
+            step = "ready"
+            reply = f"Perfect. Your {service.lower()} request is ready to send to {matched_business_name}. Tap Send Request below."
+        else:
+            parsed = _extract_email(msg)
+            if not parsed:
+                reply = "That doesn't look like an email address. Try again, or type SKIP."
+            else:
+                customer_email = parsed
+                step = "ready"
+                reply = f"Perfect. Your {service.lower()} request is ready to send to {matched_business_name}. Tap Send Request below."
+    else:
+        reply = f"Your request is ready to send to {matched_business_name}."
+
+    return {
+        "reply": reply,
+        "service": service,
+        "urgency": urgency,
+        "issue": issue,
+        "intake_step": step,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "customer_email": customer_email,
+        "customer_zip": customer_zip,
+        "matched_business_id": matched_business_id,
+        "business_name": matched_business_name
+    }
+
+
 def classify(text):
     t = text.lower()
 
@@ -1104,7 +1297,9 @@ let chatContext = {
   customer_name: "",
   customer_phone: "",
   customer_email: "",
-  customer_zip: ""
+  customer_zip: "",
+  matched_business_id: 0,
+  business_name: ""
 };
 
 function add(text,cls){
@@ -1146,6 +1341,8 @@ async function sendChat(){
  chatContext.customer_phone=j.customer_phone||chatContext.customer_phone;
  if(j.customer_email!==undefined) chatContext.customer_email=j.customer_email;
  chatContext.customer_zip=j.customer_zip||chatContext.customer_zip;
+ chatContext.matched_business_id=j.matched_business_id||chatContext.matched_business_id;
+ chatContext.business_name=j.business_name||chatContext.business_name;
 
  document.getElementById('service').value=chatContext.service;
  document.getElementById('urgency').value=chatContext.urgency;
@@ -1164,7 +1361,7 @@ async function sendChat(){
 
 async function submitLead(){
  const data={
-   business_id: __BUSINESS_ID__,
+   business_id: chatContext.matched_business_id || __BUSINESS_ID__,
    name:document.getElementById('name').value,
    phone:document.getElementById('phone').value,
    email:document.getElementById('email').value,
@@ -1190,7 +1387,7 @@ async function submitLead(){
  const j=await r.json();
 
  if(r.ok){
-   const businessName = '__BUSINESS_NAME__';
+   const businessName = chatContext.business_name || '__BUSINESS_NAME__';
    const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
    result.className='success';
    result.textContent =
@@ -1257,6 +1454,14 @@ def customer_page_html(business_id=BUSINESS_ID):
         business_name.replace("\\", "\\\\").replace("'", "\\'")
     )
     page = page.replace("__BUSINESS_ID__", str(business_id))
+    return page
+
+
+def marketplace_page_html():
+    page = INDEX
+    page = page.replace("LeadPilot Demo Services", "LeadPilot AI")
+    page = page.replace("__BUSINESS_NAME__", "LeadPilot AI")
+    page = page.replace("__BUSINESS_ID__", "0")
     return page
 
 def dashboard_score_reasons(row):
@@ -1703,7 +1908,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed_url.query)
 
         if p == "/":
-            self.send_bytes(customer_page_html(BUSINESS_ID).encode())
+            self.send_bytes(marketplace_page_html().encode())
 
         elif p.startswith("/b/"):
             try:
@@ -1868,15 +2073,21 @@ class Handler(BaseHTTPRequestHandler):
 
             if p == "/api/chat":
                 try:
-                    business_id = int(data.get("business_id") or BUSINESS_ID)
+                    business_id = int(data.get("business_id"))
                 except Exception:
                     business_id = BUSINESS_ID
 
-                out = assistant_reply(
-                    data.get("message", ""),
-                    data.get("context") or {},
-                    business_id=business_id
-                )
+                if business_id == 0:
+                    out = marketplace_reply(
+                        data.get("message", ""),
+                        data.get("context") or {}
+                    )
+                else:
+                    out = assistant_reply(
+                        data.get("message", ""),
+                        data.get("context") or {},
+                        business_id=business_id
+                    )
 
                 self.send_bytes(
                     json.dumps(out).encode(),
@@ -1887,9 +2098,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if p == "/api/leads":
                 try:
-                    business_id = int(data.get("business_id") or BUSINESS_ID)
+                    business_id = int(data.get("business_id"))
                 except Exception:
                     business_id = BUSINESS_ID
+
+                if business_id <= 0:
+                    self.send_bytes(
+                        json.dumps({"error":"no matching business selected"}).encode(),
+                        400,
+                        "application/json"
+                    )
+                    return
 
                 con = db()
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
