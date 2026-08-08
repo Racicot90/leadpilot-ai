@@ -281,125 +281,97 @@ def classify(text):
     return service, urgency
 
 def qualify_lead(name, phone, email, zip_code, service, urgency, message):
-    """Lead Scoring V2: explainable 0-100 score based on urgency, intent, job clarity, and contactability."""
-    t = (message or "").lower().strip()
+    """Lead Scoring V2.1 — scoring-only upgrade; chat/intake behavior unchanged."""
+    vals = locals()
+    def val(*keys):
+        for key in keys:
+            if key in vals and vals[key] is not None:
+                return str(vals[key])
+        return ""
+
+    name_v = val("name", "customer_name")
+    phone_v = val("phone", "customer_phone")
+    email_v = val("email", "customer_email")
+    zip_v = val("zip_code", "zip", "customer_zip")
+    service_v = val("service").strip()
+    urgency_v = val("urgency").strip()
+    message_v = val("message", "details", "issue").strip()
+    t = message_v.lower()
 
     score = 20
-    reasons = []
-
-    # 1) Urgency / immediate need
-    if urgency == "Emergency":
+    if urgency_v.lower() in ("emergency", "urgent"):
         score += 30
-        reasons.append("Emergency-level urgency")
-    elif urgency == "High":
+    elif urgency_v.lower() == "high":
         score += 20
-        reasons.append("High urgency")
     else:
         score += 5
 
-    # 2) Buying intent / timing
-    immediate_terms = [
-        "today", "right now", "asap", "immediately", "emergency",
-        "need someone", "send someone", "need it fixed", "can you come",
-        "appointment", "schedule", "book", "quote", "estimate"
-    ]
-    near_term_terms = [
-        "tomorrow", "this week", "soon", "next few days"
-    ]
-    research_terms = [
-        "thinking about", "maybe", "sometime", "just curious",
-        "price range", "how much would", "researching", "considering"
-    ]
+    immediate = ("today","right now","asap","immediately","emergency","need someone","send someone","need it fixed","can you come","appointment","schedule","book","quote","estimate")
+    research = ("thinking about","later this year","sometime","just curious","price range","researching","considering")
+    severe = ("not working","stopped working","no ac","no heat","leaking","burst","flooding","sparking","smell gas","roof leaking","ceiling leaking","won\'t turn on","broken")
+    projects = ("replace","replacement","install","installation","new system","new roof","repiping","panel upgrade","water heater","whole house")
 
-    immediate_hits = sum(1 for term in immediate_terms if term in t)
-    near_hits = sum(1 for term in near_term_terms if term in t)
-    research_hits = sum(1 for term in research_terms if term in t)
-
-    if immediate_hits:
-        add = min(18, 8 + (immediate_hits - 1) * 3)
-        score += add
-        reasons.append("Strong buying intent")
-    elif near_hits:
-        score += 8
-        reasons.append("Near-term timing")
-
-    if research_hits:
-        score -= min(12, 5 + (research_hits - 1) * 2)
-        reasons.append("Early-stage / research language")
-
-    # 3) Problem severity / failure signals
-    severe_terms = [
-        "not working", "stopped working", "no ac", "no heat",
-        "leaking", "water everywhere", "burst", "flooding",
-        "sparking", "smell gas", "roof leaking", "ceiling leaking",
-        "won't turn on", "broken"
-    ]
-    severe_hits = sum(1 for term in severe_terms if term in t)
-    if severe_hits:
-        score += min(14, 7 + (severe_hits - 1) * 3)
-        reasons.append("Clear active problem")
-
-    # 4) Clear service category
-    if service in ["HVAC", "Plumbing", "Electrical", "Roofing"]:
-        score += 7
-        reasons.append("Clear service match")
-
-    # 5) Contactability / lead completeness
-    if phone:
-        score += 8
-        reasons.append("Phone provided")
-    if email:
-        score += 3
-    if zip_code:
-        score += 5
-        reasons.append("Job location provided")
-    if name:
-        score += 2
-
-    # 6) Job detail quality
-    msg_len = len((message or "").strip())
-    if msg_len >= 80:
-        score += 5
-        reasons.append("Detailed job description")
-    elif msg_len >= 30:
-        score += 3
-
-    # 7) Potentially higher-value project language
-    project_terms = [
-        "replace", "replacement", "install", "installation",
-        "new system", "new roof", "repiping", "panel upgrade",
-        "water heater", "whole house"
-    ]
-    project_hits = sum(1 for term in project_terms if term in t)
-    if project_hits:
-        score += min(8, 4 + (project_hits - 1) * 2)
-        reasons.append("Potential larger job")
+    if any(x in t for x in immediate): score += 15
+    if any(x in t for x in research): score -= 10
+    if any(x in t for x in severe): score += 12
+    if any(x in t for x in projects): score += 7
+    if service_v and service_v.lower() != "general repair": score += 7
+    if phone_v: score += 8
+    if email_v: score += 3
+    if zip_v: score += 5
+    if name_v: score += 2
+    if len(message_v) >= 80: score += 5
+    elif len(message_v) >= 30: score += 3
 
     score = max(0, min(int(score), 100))
-
     if score >= 90:
         qualification = "Hot"
-        action = "Call immediately. This lead has very strong urgency and buying intent."
+        action = "Call immediately. Strong urgency and buying intent."
     elif score >= 75:
         qualification = "Strong"
         action = "Contact within 5-10 minutes and try to book the job."
     elif score >= 55:
         qualification = "Qualified"
-        action = "Contact soon, confirm the job details, and offer the next available appointment."
+        action = "Contact soon and offer the next available appointment."
     else:
         qualification = "Standard"
-        action = "Follow up, confirm timing and scope, and continue qualifying the customer."
+        action = "Follow up and continue qualifying the customer."
 
-    # Keep the explanation compact enough for the dashboard.
-    reason_text = ", ".join(reasons[:4]) if reasons else "Basic lead information"
+    return {"lead_score": score, "qualification": qualification, "recommended_action": action}
 
-    return {
-        "lead_score": score,
-        "qualification": qualification,
-        "recommended_action": action,
-        "score_reasons": reasons,
-        "reason_text": reason_text
-    }
+def _clean_phone(value):
+    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits
+
+def _extract_phone(value):
+    digits = _clean_phone(value)
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return ""
+
+def _extract_email(value):
+    for token in (value or "").replace(",", " ").split():
+        token = token.strip(" <>[](){};:")
+        if "@" in token and "." in token.split("@")[-1]:
+            return token
+    return ""
+
+def _extract_zip(value):
+    m = re.search(r"\b\d{5}(?:-\d{4})?\b", value or "")
+    return m.group(0) if m else ""
+
+def _extract_name(value):
+    value = (value or "").strip()
+    low = value.lower()
+    for prefix in ["my name is ", "i'm ", "im ", "i am "]:
+        if low.startswith(prefix):
+            value = value[len(prefix):].strip()
+            break
+    if 1 <= len(value.split()) <= 4 and not any(ch.isdigit() for ch in value):
+        return value.title()
+    return ""
 
 def assistant_reply(message, context=None):
     business = get_business_settings()
@@ -1128,10 +1100,6 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
 <a href="/logout">Log out</a>
 </div>
 </header>
-
-<div style="background:#fff;border-radius:14px;padding:12px 14px;margin-bottom:12px;color:#475467;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.04)">
-Lead Scoring V2 weighs urgency, buying intent, active failure, job type, contact completeness, timing, and project size.
-</div>
 
 <div class="stats">
 <div class="stat"><span>New Leads</span><b>{counts.get('New',0)}</b></div>
