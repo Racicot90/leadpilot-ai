@@ -248,16 +248,9 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
         print("SMS skipped: Twilio environment variables are incomplete.", flush=True)
         return False
 
-    preview = " ".join((message or "").split())
-    if len(preview) > 120:
-        preview = preview[:117] + "..."
-
-    body = (
-        f"🔥 HOT LEAD #{lead_id} — {service} — "
-        f"{qualification.get('lead_score', 0)}/100 — {urgency}. "
-        f"{name or 'Unnamed'} | {phone or 'No phone'}. "
-        f"{preview}"
-    )
+    # Twilio trial accounts do not allow custom SMS bodies.
+    # They require one of Twilio's predefined template names.
+    body = "sms_internal_alerts"
 
     endpoint = (
         f"https://api.twilio.com/2010-04-01/Accounts/"
