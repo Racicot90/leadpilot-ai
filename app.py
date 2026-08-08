@@ -124,7 +124,9 @@ def init_db():
                 phone TEXT,
                 email TEXT,
                 issue TEXT,
-                status TEXT DEFAULT 'Waiting'
+                status TEXT DEFAULT 'Waiting',
+                matched_business_id INTEGER DEFAULT 0,
+                notified_at TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -216,7 +218,9 @@ def init_db():
                 phone TEXT,
                 email TEXT,
                 issue TEXT,
-                status TEXT DEFAULT 'Waiting'
+                status TEXT DEFAULT 'Waiting',
+                matched_business_id INTEGER DEFAULT 0,
+                notified_at TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -314,6 +318,22 @@ def init_db():
         ]:
             try:
                 execute(con, sql)
+            except Exception:
+                pass
+
+    if USE_POSTGRES:
+        try:
+            execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS matched_business_id INTEGER DEFAULT 0")
+            execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS notified_at TEXT DEFAULT ''")
+        except Exception:
+            pass
+    else:
+        for stmt in [
+            "ALTER TABLE coverage_waitlist ADD COLUMN matched_business_id INTEGER DEFAULT 0",
+            "ALTER TABLE coverage_waitlist ADD COLUMN notified_at TEXT DEFAULT ''",
+        ]:
+            try:
+                execute(con, stmt)
             except Exception:
                 pass
 
@@ -1131,7 +1151,7 @@ def save_coverage_waitlist(service, location, customer_zip, name, phone, email, 
     con.close()
 
 
-def coverage_demand_html():
+def coverage_demand_html(message=""):
     """Admin view of unmet demand, ranked to show where provider recruiting matters most."""
     con = db()
     rows = execute(con, """SELECT * FROM coverage_waitlist ORDER BY id DESC""").fetchall()
@@ -1139,8 +1159,14 @@ def coverage_demand_html():
 
     groups = {}
     waiting_total = 0
+    ready_to_notify = 0
+    notified_total = 0
     for r in rows:
         status = (r["status"] or "Waiting").strip()
+        if status == "Provider Available":
+            ready_to_notify += 1
+        elif status == "Notified":
+            notified_total += 1
         if status != "Waiting":
             continue
         waiting_total += 1
@@ -1194,12 +1220,52 @@ def coverage_demand_html():
     for r in rows[:100]:
         place = (r["county"] or r["city"] or r["location"] or "—").strip()
         contact = (r["phone"] or r["email"] or "—").strip()
-        request_rows += f"""<div class="request"><div><strong>{html.escape(r['service'] or 'General Repair')}</strong><span>{html.escape(place)} · {html.escape(r['zip'] or '')}</span><span>{html.escape(r['created_at'] or '')} · {html.escape(r['status'] or 'Waiting')}</span></div><div class="contact">{html.escape(r['name'] or 'Unnamed')}<span>{html.escape(contact)}</span></div></div>"""
+        status = (r["status"] or "Waiting").strip()
+        business_id = int(r["matched_business_id"] or 0) if "matched_business_id" in r.keys() else 0
+        provider_name = ""
+        if business_id:
+            provider_name = get_business_settings(business_id).get("name") or ""
+
+        notify_action = ""
+        if status == "Provider Available":
+            if (r["phone"] or "").strip():
+                notify_action = f"""
+                <form method="POST" action="/coverage-demand/notify">
+                  <input type="hidden" name="waitlist_id" value="{r['id']}">
+                  <button class="notify-btn" type="submit">Notify customer</button>
+                </form>
+                """
+            else:
+                notify_action = '<span class="email-note">Ready to notify — email delivery not configured yet.</span>'
+
+        provider_line = f"<span>Matched provider: {html.escape(provider_name)}</span>" if provider_name else ""
+        request_rows += f"""
+        <div class="request">
+          <div>
+            <strong>{html.escape(r['service'] or 'General Repair')}</strong>
+            <span>{html.escape(place)} · {html.escape(r['zip'] or '')}</span>
+            <span>{html.escape(r['created_at'] or '')} · {html.escape(status)}</span>
+            {provider_line}
+          </div>
+          <div class="contact">
+            {html.escape(r['name'] or 'Unnamed')}
+            <span>{html.escape(contact)}</span>
+            {notify_action}
+          </div>
+        </div>
+        """
 
     opportunity = (f"Top recruiting opportunity: {top['service']} in {top['area']} — {top['count']} waiting customer(s)." if top else "LeadPilot will rank recruiting opportunities as waitlist demand comes in.")
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>LeadPilot Coverage Demand</title><style>
-*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.recruit-btn{{display:inline-block;margin-top:12px;background:#172033;color:#fff!important;padding:9px 12px;border-radius:9px;font-size:12px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
-</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/recruiting">Provider Recruiting</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div><div class="summary"><span>Customers currently waiting</span><strong>{waiting_total}</strong><p>{html.escape(opportunity)}</p></div><div class="grid">{demand_cards}</div><h2>Recent coverage requests</h2>{request_rows or '<div class="empty">No requests yet.</div>'}</div></body></html>"""
+*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.recruit-btn{{display:inline-block;margin-top:12px;background:#172033;color:#fff!important;padding:9px 12px;border-radius:9px;font-size:12px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.notify-btn{{margin-top:8px;border:0;border-radius:9px;background:#087443;color:#fff;padding:9px 11px;font-weight:800}}.email-note{{margin-top:8px;color:#93370d!important;font-size:11px!important}}.flash{{margin:12px 0;padding:12px;border-radius:10px;background:#e0e7ff;color:#29339b;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.summary-grid{{grid-template-columns:1fr 1fr 1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
+</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/recruiting">Provider Recruiting</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div>{f'<div class="flash">{html.escape(message)}</div>' if message else ''}<div class="summary">
+<div class="summary-grid">
+<div><span>Still waiting</span><strong>{waiting_total}</strong></div>
+<div><span>Ready to notify</span><strong>{ready_to_notify}</strong></div>
+<div><span>Notified</span><strong>{notified_total}</strong></div>
+</div>
+<p>{html.escape(opportunity)}</p>
+</div><div class="grid">{demand_cards}</div><h2>Recent coverage requests</h2>{request_rows or '<div class="empty">No requests yet.</div>'}</div></body></html>"""
 
 
 
@@ -1357,8 +1423,73 @@ def update_provider_prospect_status(prospect_id, status):
     return bool(changed)
 
 
+def mark_waitlist_provider_available(business_id):
+    """
+    Connect historical unmet demand to a newly activated provider.
+    We do NOT auto-send the customer message here; this creates a reviewable
+    'Provider Available' notification queue.
+    """
+    business = get_business_settings(business_id)
+    if not business_can_receive_leads(business):
+        return 0
+
+    con = db()
+    rows = execute(
+        con,
+        """SELECT * FROM coverage_waitlist
+           WHERE status='Waiting'
+           ORDER BY id"""
+    ).fetchall()
+
+    matched = 0
+    for r in rows:
+        service = (r["service"] or "General Repair").strip()
+        if not business_supports_service(business, service):
+            continue
+
+        location_value = (
+            (r["zip"] or "").strip()
+            or (r["city"] or "").strip()
+            or (r["location"] or "").strip()
+        )
+        resolved = resolve_florida_location(location_value)
+        if not resolved:
+            continue
+
+        if not business_serves_location(business, resolved):
+            continue
+
+        execute(
+            con,
+            """UPDATE coverage_waitlist
+               SET status='Provider Available', matched_business_id=?
+               WHERE id=? AND status='Waiting'""",
+            (business_id, r["id"])
+        )
+        matched += 1
+
+    con.commit()
+    con.close()
+    return matched
+
+
 def activate_provider_prospect(prospect_id):
-    """Final activation: verified prospect becomes a live routable business."""
+    """
+    Final activation:
+    Approved + fully verified prospect -> Live routable business.
+    """
+    con = db()
+    prospect = execute(
+        con, "SELECT * FROM provider_prospects WHERE id=?", (prospect_id,)
+    ).fetchone()
+    con.close()
+
+    if not prospect:
+        return False, "Provider prospect was not found."
+
+    if (prospect["status"] or "").strip() != "Approved":
+        return False, "Move the provider to Approved before activation."
+
     business_id = ensure_prospect_business(prospect_id)
     if not business_id:
         return False, "Could not create the linked business."
@@ -1382,7 +1513,10 @@ def activate_provider_prospect(prospect_id):
     )
     con.commit()
     con.close()
-    return True, business_id
+
+    matched_waiting = mark_waitlist_provider_available(business_id)
+    return True, {"business_id": business_id, "waiting_matches": matched_waiting}
+
 
 
 def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count="", prefill_county="", prefill_zip="", message=""):
@@ -1432,15 +1566,17 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
                 <a href="/settings?business={business_id}">Open verification settings →</a>
               </div>
             """
-            if ready and status != "Live":
+            if status == "Approved" and ready:
                 activation_panel = f"""
                   <form method="POST" action="/recruiting/activate">
                     <input type="hidden" name="prospect_id" value="{r['id']}">
                     <button class="activate-btn" type="submit">✓ Activate Provider</button>
                   </form>
                 """
-            elif status != "Live":
+            elif status == "Approved" and not ready:
                 activation_panel = '<div class="not-ready">Activation locked — finish verification first.</div>'
+            elif status not in ("Live", "Passed"):
+                activation_panel = '<div class="not-ready">Complete the pipeline through Approved before activation.</div>'
 
         cards += f"""
         <div class="prospect">
@@ -1456,7 +1592,8 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
           {f'<div class="notes">{html.escape(r["notes"])}</div>' if r["notes"] else ''}
           {verification_panel}
           {activation_panel}
-          {"<div class='live-box'>✓ Live and eligible for LeadPilot routing</div>" if status == "Live" else ""}
+          {"<div class='live-box'>🟢 LIVE — LeadPilot Verified and eligible for routing</div>" if status == "Live" else ""}
+          {"" if status == "Live" else f"""
           <form method="POST" action="/recruiting/status">
             <input type="hidden" name="prospect_id" value="{r['id']}">
             <label>Pipeline stage</label>
@@ -1465,6 +1602,7 @@ def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=
               <button type="submit">Update</button>
             </div>
           </form>
+          """}
         </div>
         """
 
@@ -2439,6 +2577,58 @@ def send_twilio_body(to_phone, body):
 
         print("Twilio chase error:", repr(e), detail[:600], flush=True)
         return False
+
+
+def notify_waitlist_customer(waitlist_id):
+    """
+    Send a customer the coverage-available SMS they opted into.
+    Does not create a lead automatically; customer returns to LeadPilot to submit.
+    """
+    con = db()
+    row = execute(
+        con, "SELECT * FROM coverage_waitlist WHERE id=?", (waitlist_id,)
+    ).fetchone()
+    con.close()
+
+    if not row:
+        return False, "Coverage request not found."
+
+    if (row["status"] or "").strip() != "Provider Available":
+        return False, "This request is not ready for notification."
+
+    phone = (row["phone"] or "").strip()
+    business_id = int(row["matched_business_id"] or 0)
+    if not phone or not business_id:
+        return False, "A phone number and matched provider are required."
+
+    business = get_business_settings(business_id)
+    if not business_can_receive_leads(business):
+        return False, "The matched provider is no longer eligible for leads."
+
+    service = (row["service"] or "service").strip()
+    location = (row["city"] or row["location"] or "your area").strip()
+    provider_name = business.get("name") or "a verified local provider"
+
+    body = (
+        f"LeadPilot update: {provider_name} is now available for {service} "
+        f"in {location}. Return to LeadPilot to submit your request."
+    )
+
+    if not send_twilio_body(phone, body):
+        return False, "SMS could not be sent."
+
+    con = db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    execute(
+        con,
+        """UPDATE coverage_waitlist
+           SET status='Notified', notified_at=?
+           WHERE id=?""",
+        (now, waitlist_id)
+    )
+    con.commit()
+    con.close()
+    return True, provider_name
 
 
 def run_lead_chase_once():
@@ -3448,7 +3638,7 @@ class Handler(BaseHTTPRequestHandler):
             if not logged_in(self.headers):
                 self.redirect("/login")
                 return
-            self.send_bytes(coverage_demand_html().encode())
+            self.send_bytes(coverage_demand_html(message=query.get("message", [""])[0]).encode())
 
         elif p == "/recruiting":
             if not logged_in(self.headers):
@@ -3581,6 +3771,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(f"/businesses?created={business_id}")
                 return
 
+            if p == "/coverage-demand/notify":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                form = self.read_form()
+                try:
+                    waitlist_id = int(form.get("waitlist_id", "0"))
+                except Exception:
+                    waitlist_id = 0
+                ok, result = notify_waitlist_customer(waitlist_id)
+                message = (
+                    "Customer notification sent."
+                    if ok else "Could not notify customer: " + str(result)
+                )
+                self.redirect("/coverage-demand?message=" + quote(message))
+                return
+
             if p == "/recruiting":
                 if not logged_in(self.headers):
                     self.redirect("/login")
@@ -3629,7 +3836,12 @@ class Handler(BaseHTTPRequestHandler):
                     prospect_id = 0
                 ok, result = activate_provider_prospect(prospect_id)
                 if ok:
-                    self.redirect("/recruiting?message=" + quote("Provider activated and is now eligible for routing."))
+                    waiting_matches = int(result.get("waiting_matches", 0))
+                    message = (
+                        f"Provider activated and is now LIVE. "
+                        f"{waiting_matches} waiting customer(s) are ready to notify."
+                    )
+                    self.redirect("/recruiting?message=" + quote(message))
                 else:
                     self.redirect("/recruiting?message=" + quote(str(result)))
                 return
