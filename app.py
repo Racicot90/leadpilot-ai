@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import sqlite3
 import hashlib
@@ -339,6 +340,41 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
         "score_reasons": reasons
     }
 
+
+def _clean_phone(value):
+    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits
+
+def _extract_phone(value):
+    digits = _clean_phone(value)
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return ""
+
+def _extract_email(value):
+    for token in (value or "").replace(",", " ").split():
+        token = token.strip(" <>[](){};:")
+        if "@" in token and "." in token.split("@")[-1]:
+            return token
+    return ""
+
+def _extract_zip(value):
+    m = re.search(r"\b\d{5}(?:-\d{4})?\b", value or "")
+    return m.group(0) if m else ""
+
+def _extract_name(value):
+    value = (value or "").strip()
+    low = value.lower()
+    for prefix in ["my name is ", "i'm ", "im ", "i am "]:
+        if low.startswith(prefix):
+            value = value[len(prefix):].strip()
+            break
+    if 1 <= len(value.split()) <= 4 and not any(ch.isdigit() for ch in value):
+        return value.title()
+    return ""
+
 def assistant_reply(message, context=None):
     business = get_business_settings()
     context = context or {}
@@ -351,6 +387,75 @@ def assistant_reply(message, context=None):
 
     msg = (message or "").strip()
     msg_lower = msg.lower()
+
+    intake_step = (context.get("intake_step") or "").strip()
+    customer_name = (context.get("customer_name") or "").strip()
+    customer_phone = (context.get("customer_phone") or "").strip()
+    customer_email = (context.get("customer_email") or "").strip()
+    customer_zip = (context.get("customer_zip") or "").strip()
+
+    if intake_step:
+        service0 = context.get("service", "")
+        urgency0 = context.get("urgency", "")
+        issue0 = context.get("issue", "")
+
+        if intake_step == "name":
+            parsed = _extract_name(msg)
+            if not parsed:
+                reply = "I just need your name first. What name should I put on the request?"
+            else:
+                customer_name = parsed
+                intake_step = "phone"
+                reply = f"Thanks, {customer_name}. What's the best phone number for the business to reach you?"
+
+        elif intake_step == "phone":
+            parsed = _extract_phone(msg)
+            if not parsed:
+                reply = "Please send a 10-digit phone number so the business can contact you."
+            else:
+                customer_phone = parsed
+                intake_step = "email"
+                reply = "Got it. What's your email address? You can type SKIP if you'd rather not provide one."
+
+        elif intake_step == "email":
+            if msg_lower == "skip":
+                customer_email = ""
+                intake_step = "zip"
+                reply = "No problem. What's the ZIP code for the job?"
+            else:
+                parsed = _extract_email(msg)
+                if not parsed:
+                    reply = "That doesn't look like an email address. Please try again, or type SKIP."
+                else:
+                    customer_email = parsed
+                    intake_step = "zip"
+                    reply = "Thanks. What's the ZIP code for the job?"
+
+        elif intake_step == "zip":
+            parsed = _extract_zip(msg)
+            if not parsed:
+                reply = "Please send the 5-digit ZIP code for the job."
+            else:
+                customer_zip = parsed
+                intake_step = "ready"
+                reply = (
+                    f"Perfect. I have your {service0.lower() or 'service'} request ready for {customer_name}. "
+                    "Your information has been filled into the request form below. Tap Submit Request to send it."
+                )
+        else:
+            reply = "Your request is ready to submit."
+
+        return {
+            "reply": reply,
+            "service": service0,
+            "urgency": urgency0,
+            "issue": issue0,
+            "intake_step": intake_step,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "customer_email": customer_email,
+            "customer_zip": customer_zip
+        }
 
     detected_service, detected_urgency = classify(msg)
     prior_service = (context.get("service") or "").strip()
@@ -519,7 +624,7 @@ def assistant_reply(message, context=None):
         area_note = f" Their listed service area is {service_area}." if service_area else ""
         reply = (
             f"That sounds like a {service} request for {business_name}.{area_note} "
-            "Please fill in your contact information below and the business can follow up."
+            "I can collect your contact information right here. What's your name?"
         )
 
     return {
@@ -529,7 +634,18 @@ def assistant_reply(message, context=None):
         "issue": issue,
         "business_name": business_name,
         "service_area": service_area,
-        "services": services
+        "services": services,
+        "intake_step": (
+            "name"
+            if service != "General Repair"
+            and not looks_like_location_followup
+            and not location_question
+            else ""
+        ),
+        "customer_name": "",
+        "customer_phone": "",
+        "customer_email": "",
+        "customer_zip": ""
     }
 
 
@@ -691,7 +807,12 @@ button{padding:12px 16px;border:0;border-radius:10px;background:#172033;color:#f
 let chatContext = {
   service: "",
   urgency: "",
-  issue: ""
+  issue: "",
+  intake_step: "",
+  customer_name: "",
+  customer_phone: "",
+  customer_email: "",
+  customer_zip: ""
 };
 
 function add(text,cls){
@@ -727,13 +848,24 @@ async function sendChat(){
  chatContext.service=j.service||chatContext.service;
  chatContext.urgency=j.urgency||chatContext.urgency;
  chatContext.issue=j.issue||chatContext.issue;
+ if(j.intake_step!==undefined) chatContext.intake_step=j.intake_step;
+ chatContext.customer_name=j.customer_name||chatContext.customer_name;
+ chatContext.customer_phone=j.customer_phone||chatContext.customer_phone;
+ if(j.customer_email!==undefined) chatContext.customer_email=j.customer_email;
+ chatContext.customer_zip=j.customer_zip||chatContext.customer_zip;
+
  document.getElementById('service').value=chatContext.service;
  document.getElementById('urgency').value=chatContext.urgency;
+ if(j.issue) document.getElementById('details').value=j.issue;
 
- // Keep the original job description when a later message is only a location follow-up.
- if(j.issue){
-   document.getElementById('details').value=j.issue;
- }
+ const nameEl=document.querySelector('input[name="name"]');
+ const phoneEl=document.querySelector('input[name="phone"]');
+ const emailEl=document.querySelector('input[name="email"]');
+ const zipEl=document.querySelector('input[name="zip"]');
+ if(nameEl && chatContext.customer_name) nameEl.value=chatContext.customer_name;
+ if(phoneEl && chatContext.customer_phone) phoneEl.value=chatContext.customer_phone;
+ if(emailEl && chatContext.customer_email) emailEl.value=chatContext.customer_email;
+ if(zipEl && chatContext.customer_zip) zipEl.value=chatContext.customer_zip;
 }
 
 async function submitLead(){
