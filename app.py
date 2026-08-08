@@ -951,7 +951,7 @@ async function submitLead(){
  const j=await r.json();
 
  if(r.ok){
-   const businessName = document.querySelector('.muted')?.textContent?.trim() || 'the business';
+   const businessName = document.querySelector('h1')?.textContent?.trim() || 'the business';
    const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
    result.className='success';
    result.textContent =
