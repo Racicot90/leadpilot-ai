@@ -5,7 +5,8 @@ import hashlib
 import hmac
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.request import Request, urlopen
 from http.cookies import SimpleCookie
 
 HOST = "0.0.0.0"
@@ -16,6 +17,10 @@ BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "LeadPilot Demo Services")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-secret")
+NOTIFY_PHONE = os.environ.get("NOTIFY_PHONE", "").strip()
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
 BUSINESS_ID = 1
 
 USE_POSTGRES = bool(DATABASE_URL)
@@ -217,6 +222,67 @@ def assistant_reply(message):
         )
 
     return {"reply": reply, "service": service, "urgency": urgency}
+
+
+def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification):
+    """Send a concise SMS alert for Hot leads. Failures never block lead creation."""
+    if qualification.get("qualification") != "Hot":
+        return False
+
+    if not all([
+        NOTIFY_PHONE,
+        TWILIO_PHONE_NUMBER,
+        TWILIO_ACCOUNT_SID,
+        TWILIO_AUTH_TOKEN
+    ]):
+        print("SMS skipped: Twilio environment variables are incomplete.")
+        return False
+
+    preview = " ".join((message or "").split())
+    if len(preview) > 120:
+        preview = preview[:117] + "..."
+
+    body = (
+        f"🔥 HOT LEAD #{lead_id} — {service} — "
+        f"{qualification.get('lead_score', 0)}/100 — {urgency}. "
+        f"{name or 'Unnamed'} | {phone or 'No phone'}. "
+        f"{preview}"
+    )
+
+    endpoint = (
+        f"https://api.twilio.com/2010-04-01/Accounts/"
+        f"{TWILIO_ACCOUNT_SID}/Messages.json"
+    )
+
+    payload = urlencode({
+        "To": NOTIFY_PHONE,
+        "From": TWILIO_PHONE_NUMBER,
+        "Body": body
+    }).encode()
+
+    import base64
+    token = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
+    ).decode()
+
+    req = Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {token}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    )
+
+    try:
+        with urlopen(req, timeout=15) as resp:
+            ok = 200 <= getattr(resp, "status", 0) < 300
+            print("Twilio SMS:", "sent" if ok else f"status {getattr(resp, 'status', '?')}")
+            return ok
+    except Exception as e:
+        print("Twilio SMS error:", repr(e))
+        return False
 
 def make_session(username):
     sig = hmac.new(
@@ -798,6 +864,17 @@ class Handler(BaseHTTPRequestHandler):
 
                 con.commit()
                 con.close()
+
+                # Notify the business immediately when LeadPilot marks the lead Hot.
+                send_hot_lead_sms(
+                    lead_id,
+                    data.get("name"),
+                    data.get("phone"),
+                    service,
+                    urgency,
+                    message,
+                    qualification
+                )
 
                 self.send_bytes(
                     json.dumps({
