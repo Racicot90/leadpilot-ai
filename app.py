@@ -951,7 +951,7 @@ async function submitLead(){
  const j=await r.json();
 
  if(r.ok){
-   const businessName = document.querySelector('h1')?.textContent?.trim() || 'the business';
+   const businessName = '__BUSINESS_NAME__';
    const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
    result.className='success';
    result.textContent =
@@ -1010,8 +1010,13 @@ button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;co
 
 def customer_page_html():
     business = get_business_settings()
+    business_name = business.get("name") or BUSINESS_NAME
     page = INDEX
-    page = page.replace("LeadPilot Demo Services", html.escape(business.get("name") or BUSINESS_NAME))
+    page = page.replace("LeadPilot Demo Services", html.escape(business_name))
+    page = page.replace(
+        "__BUSINESS_NAME__",
+        business_name.replace("\\", "\\\\").replace("'", "\\'")
+    )
     return page
 
 def dashboard_score_reasons(row):
