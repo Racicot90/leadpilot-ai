@@ -117,6 +117,8 @@ def init_db():
                 created_at TEXT NOT NULL,
                 service TEXT NOT NULL,
                 location TEXT,
+                city TEXT DEFAULT '',
+                county TEXT DEFAULT '',
                 zip TEXT,
                 name TEXT,
                 phone TEXT,
@@ -188,6 +190,8 @@ def init_db():
                 created_at TEXT NOT NULL,
                 service TEXT NOT NULL,
                 location TEXT,
+                city TEXT DEFAULT '',
+                county TEXT DEFAULT '',
                 zip TEXT,
                 name TEXT,
                 phone TEXT,
@@ -232,6 +236,8 @@ def init_db():
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS chase_10_sent INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS chase_30_sent INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS city TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE coverage_waitlist ADD COLUMN IF NOT EXISTS county TEXT DEFAULT ''")
     else:
         for sql in [
             "ALTER TABLE businesses ADD COLUMN services TEXT DEFAULT ''",
@@ -263,7 +269,9 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN terms_accepted INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
-            "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
+            "ALTER TABLE leads ADD COLUMN recommended_action TEXT",
+            "ALTER TABLE coverage_waitlist ADD COLUMN city TEXT DEFAULT ''",
+            "ALTER TABLE coverage_waitlist ADD COLUMN county TEXT DEFAULT ''"
         ]:
             try:
                 execute(con, sql)
@@ -579,7 +587,7 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 .bizlinks{{display:flex;gap:10px;flex-wrap:wrap}} a{{color:#3448c5;font-weight:700;text-decoration:none}} .success{{background:#dcfae6;color:#05603a;padding:12px;border-radius:10px;margin-bottom:12px}}
 @media(max-width:650px){{.biz{{display:block}} .bizlinks{{margin-top:12px}}}}
 </style></head><body><div class="wrap">
-<h1>LeadPilot Businesses</h1>
+<div style="margin-bottom:12px"><a href="/coverage-demand">🔥 Coverage Demand</a></div><h1>LeadPilot Businesses</h1>
 <div class="muted">Each business gets its own customer page, settings, dashboard, service area, and leads.</div>
 {created}
 <div class="card">
@@ -1058,28 +1066,74 @@ def routing_diagnostics(service, location):
 
 
 def save_coverage_waitlist(service, location, customer_zip, name, phone, email, issue):
-    """Save unmet marketplace demand so LeadPilot can notify the customer later."""
+    """Save unmet marketplace demand with normalized Florida geography."""
+    resolved = resolve_florida_location(location or customer_zip) or {}
+    city = (resolved.get("city") or "").strip()
+    county = (resolved.get("county") or "").strip()
+    postcode = (resolved.get("postcode") or customer_zip or "").strip()
     con = db()
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     execute(
         con,
         """INSERT INTO coverage_waitlist
-           (created_at,service,location,zip,name,phone,email,issue,status)
-           VALUES(?,?,?,?,?,?,?,?,?)""",
+           (created_at,service,location,city,county,zip,name,phone,email,issue,status)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (
             now,
             (service or "General Repair").strip(),
-            (location or "").strip(),
-            (customer_zip or "").strip(),
-            (name or "").strip(),
-            (phone or "").strip(),
-            (email or "").strip(),
-            (issue or "").strip(),
-            "Waiting"
+            (location or "").strip(), city, county, postcode,
+            (name or "").strip(), (phone or "").strip(),
+            (email or "").strip(), (issue or "").strip(), "Waiting"
         )
     )
     con.commit()
     con.close()
+
+
+def coverage_demand_html():
+    """Admin view of unmet demand, ranked to show where provider recruiting matters most."""
+    con = db()
+    rows = execute(con, """SELECT * FROM coverage_waitlist ORDER BY id DESC""").fetchall()
+    con.close()
+
+    groups = {}
+    waiting_total = 0
+    for r in rows:
+        status = (r["status"] or "Waiting").strip()
+        if status != "Waiting":
+            continue
+        waiting_total += 1
+        service = (r["service"] or "General Repair").strip()
+        city = (r["city"] or "").strip()
+        county = (r["county"] or "").strip()
+        location = (r["location"] or "").strip()
+        area = county or city or location or "Unknown area"
+        key = (area, service)
+        g = groups.setdefault(key, {"area":area, "service":service, "count":0, "city":city, "county":county})
+        g["count"] += 1
+
+    ranked = sorted(groups.values(), key=lambda x: (-x["count"], x["area"].lower(), x["service"].lower()))
+    top = ranked[0] if ranked else None
+
+    demand_cards = ""
+    for g in ranked:
+        heat = "hot" if g["count"] >= 10 else ("warm" if g["count"] >= 5 else "normal")
+        label = "🔥 Recruit now" if g["count"] >= 10 else ("Growing demand" if g["count"] >= 5 else "Demand detected")
+        detail = g["county"] or g["city"] or g["area"]
+        demand_cards += f"""<div class="demand-card {heat}"><div><span class="eyebrow">{html.escape(label)}</span><h3>{html.escape(g['service'])}</h3><p>{html.escape(detail)}</p></div><div class="demand-count">{g['count']}<small>waiting</small></div></div>"""
+    if not demand_cards:
+        demand_cards = '<div class="empty">No unmet coverage demand yet. New waitlist requests will appear here automatically.</div>'
+
+    request_rows = ""
+    for r in rows[:100]:
+        place = (r["county"] or r["city"] or r["location"] or "—").strip()
+        contact = (r["phone"] or r["email"] or "—").strip()
+        request_rows += f"""<div class="request"><div><strong>{html.escape(r['service'] or 'General Repair')}</strong><span>{html.escape(place)} · {html.escape(r['zip'] or '')}</span><span>{html.escape(r['created_at'] or '')} · {html.escape(r['status'] or 'Waiting')}</span></div><div class="contact">{html.escape(r['name'] or 'Unnamed')}<span>{html.escape(contact)}</span></div></div>"""
+
+    opportunity = (f"Top recruiting opportunity: {top['service']} in {top['area']} — {top['count']} waiting customer(s)." if top else "LeadPilot will rank recruiting opportunities as waitlist demand comes in.")
+    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>LeadPilot Coverage Demand</title><style>
+*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
+</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div><div class="summary"><span>Customers currently waiting</span><strong>{waiting_total}</strong><p>{html.escape(opportunity)}</p></div><div class="grid">{demand_cards}</div><h2>Recent coverage requests</h2>{request_rows or '<div class="empty">No requests yet.</div>'}</div></body></html>"""
 
 
 def marketplace_reply(message, context=None):
@@ -2821,7 +2875,7 @@ h1{{font-size:28px;margin:0}}
 
 <div class="toplinks">
 <a href="/b/{business_id}">Customer page</a>
-<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a>
+<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a> <a href="/coverage-demand">Coverage Demand</a>
 <a href="/logout">Log out</a>
 </div>
 </header>
@@ -2955,6 +3009,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             created = query.get("created", [None])[0]
             self.send_bytes(businesses_html(created_id=created).encode())
+
+        elif p == "/coverage-demand":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+            self.send_bytes(coverage_demand_html().encode())
 
         elif p == "/login":
             if logged_in(self.headers):
