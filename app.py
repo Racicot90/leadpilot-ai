@@ -756,6 +756,21 @@ def marketplace_reply(message, context=None):
 
     elif step == "details":
         issue = msg
+
+        # Re-evaluate the customer's FINAL problem description before saving.
+        # Earlier chat turns may only contain a broad service name such as
+        # "Plumbing", which defaults to Normal urgency. The detailed problem
+        # is the best source for urgency and buying intent.
+        final_service, final_urgency = classify(issue)
+
+        # Preserve the service we already matched unless the final description
+        # clearly identifies another supported trade.
+        if final_service != "General Repair":
+            service = final_service
+
+        # Always refresh urgency from the actual job description.
+        urgency = final_urgency
+
         step = "submitted"
         reply = (
             f"Got it. I'm sending your {service.lower()} request to "
