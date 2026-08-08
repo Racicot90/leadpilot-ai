@@ -7,7 +7,7 @@ import hmac
 import threading
 import time
 import html
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, urlencode, quote
 from urllib.request import Request, urlopen
@@ -71,7 +71,8 @@ def init_db():
                 routing_enabled INTEGER DEFAULT 1,
                 routing_priority INTEGER DEFAULT 0,
                 daily_lead_cap INTEGER DEFAULT 0,
-                last_routed_at TEXT DEFAULT ''
+                last_routed_at TEXT DEFAULT '',
+                reserved_until TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -109,7 +110,8 @@ def init_db():
                 routing_enabled INTEGER DEFAULT 1,
                 routing_priority INTEGER DEFAULT 0,
                 daily_lead_cap INTEGER DEFAULT 0,
-                last_routed_at TEXT DEFAULT ''
+                last_routed_at TEXT DEFAULT '',
+                reserved_until TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -142,6 +144,7 @@ def init_db():
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS routing_priority INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS daily_lead_cap INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_routed_at TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS reserved_until TEXT DEFAULT ''")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
@@ -157,6 +160,7 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN routing_priority INTEGER DEFAULT 0",
             "ALTER TABLE businesses ADD COLUMN daily_lead_cap INTEGER DEFAULT 0",
             "ALTER TABLE businesses ADD COLUMN last_routed_at TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN reserved_until TEXT DEFAULT ''",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
             "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
@@ -174,7 +178,7 @@ def get_business_settings(business_id=BUSINESS_ID):
     con = db()
     row = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at FROM businesses WHERE id=?",
+        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until FROM businesses WHERE id=?",
         (business_id,)
     ).fetchone()
     con.close()
@@ -190,7 +194,8 @@ def get_business_settings(business_id=BUSINESS_ID):
             "routing_enabled": 1,
             "routing_priority": 0,
             "daily_lead_cap": 0,
-            "last_routed_at": ""
+            "last_routed_at": "",
+            "reserved_until": ""
         }
 
     return {
@@ -203,7 +208,8 @@ def get_business_settings(business_id=BUSINESS_ID):
         "routing_enabled": int(row["routing_enabled"] if row["routing_enabled"] is not None else 1),
         "routing_priority": int(row["routing_priority"] or 0),
         "daily_lead_cap": int(row["daily_lead_cap"] or 0),
-        "last_routed_at": row["last_routed_at"] or ""
+        "last_routed_at": row["last_routed_at"] or "",
+        "reserved_until": row["reserved_until"] or ""
     }
 
 def save_business_settings(name, services, service_area, email, alert_phone, routing_enabled=1, routing_priority=0, daily_lead_cap=0, business_id=BUSINESS_ID):
@@ -310,7 +316,7 @@ def list_businesses():
     con = db()
     rows = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at FROM businesses ORDER BY id"
+        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until FROM businesses ORDER BY id"
     ).fetchall()
     con.close()
     return rows
@@ -325,8 +331,8 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
 
     execute(
         con,
-        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at,reserved_until)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (
             int(new_id),
             (name or f"Business {new_id}").strip(),
@@ -337,6 +343,7 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
             1,
             0,
             0,
+            "",
             ""
         )
     )
@@ -570,21 +577,56 @@ def business_serves_location(business, resolved_location):
     return False
 
 
-def match_business_for_lead(service, location):
+def _parse_utc_timestamp(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def reserve_business_turn(business_id, minutes=15):
+    """Reserve a marketplace routing turn when a business is selected."""
+    now = datetime.utcnow()
+    until = now + timedelta(minutes=minutes)
+
+    con = db()
+    execute(
+        con,
+        "UPDATE businesses SET last_routed_at=?, reserved_until=? WHERE id=?",
+        (
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            until.strftime("%Y-%m-%d %H:%M:%S"),
+            business_id
+        )
+    )
+    con.commit()
+    con.close()
+
+
+def match_business_for_lead(service, location, reserve=True):
     """
-    Multi-Business Routing V1.
+    True Round-Robin Routing V3.
 
     Eligibility:
-      1. Marketplace routing is enabled.
-      2. Business offers the requested service.
-      3. Business covers the resolved Florida location.
-      4. Daily lead cap has not been reached.
+      1. Marketplace routing enabled.
+      2. Requested service offered.
+      3. Florida territory match.
+      4. Daily lead cap not reached.
+      5. Active routing reservations are skipped if any unreserved match exists.
 
     Ranking:
-      1. Higher routing priority first.
-      2. Fewer marketplace leads today.
-      3. Oldest last-routed timestamp.
-      4. Business ID for a stable tie-breaker.
+      1. Higher priority first.
+      2. Fewer completed leads today.
+      3. Never/least recently routed first.
+      4. Business ID as stable tie-breaker.
+
+    A selected business is reserved immediately for 15 minutes, so simply
+    previewing a match advances the rotation. Reservations expire automatically.
     """
     resolved = resolve_florida_location(location)
     if not resolved:
@@ -594,13 +636,16 @@ def match_business_for_lead(service, location):
     businesses = execute(
         con,
         """SELECT id,name,services,service_area,email,alert_phone,
-                  routing_enabled,routing_priority,daily_lead_cap,last_routed_at
+                  routing_enabled,routing_priority,daily_lead_cap,
+                  last_routed_at,reserved_until
            FROM businesses
            ORDER BY id"""
     ).fetchall()
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    ranked = []
+    now = datetime.utcnow()
+
+    eligible = []
 
     for b in businesses:
         if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
@@ -625,35 +670,105 @@ def match_business_for_lead(service, location):
 
         priority = int(b["routing_priority"] or 0)
         last_routed = (b["last_routed_at"] or "").strip()
+        reserved_until = _parse_utc_timestamp(b["reserved_until"])
+        is_reserved = reserved_until is not None and reserved_until > now
 
-        # Blank means never routed, so it sorts before any real timestamp.
-        ranked.append((
-            -priority,
-            today_count,
-            last_routed,
-            int(b["id"]),
-            b
-        ))
+        eligible.append({
+            "business": b,
+            "today_count": today_count,
+            "priority": priority,
+            "last_routed": last_routed,
+            "is_reserved": is_reserved
+        })
 
     con.close()
 
-    if not ranked:
+    if not eligible:
         return None, resolved
 
+    # Prefer unreserved businesses when at least one exists.
+    pool = [e for e in eligible if not e["is_reserved"]]
+    if not pool:
+        pool = eligible
+
+    ranked = []
+    for e in pool:
+        ranked.append((
+            -e["priority"],
+            e["today_count"],
+            e["last_routed"],
+            int(e["business"]["id"]),
+            e["business"]
+        ))
+
     ranked.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
-    return ranked[0][4], resolved
+    selected = ranked[0][4]
+
+    if reserve:
+        reserve_business_turn(int(selected["id"]), minutes=15)
+
+    return selected, resolved
 
 
-def mark_business_routed(business_id):
-    """Record a completed marketplace routing event."""
+def routing_diagnostics(service, location):
+    """Return a plain-text routing explanation for beta troubleshooting."""
+    resolved = resolve_florida_location(location)
+    if not resolved:
+        return ["Location could not be resolved."]
+
     con = db()
-    execute(
+    businesses = execute(
         con,
-        "UPDATE businesses SET last_routed_at=? WHERE id=?",
-        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), business_id)
-    )
-    con.commit()
+        """SELECT id,name,services,service_area,routing_enabled,
+                  routing_priority,daily_lead_cap,last_routed_at,reserved_until
+           FROM businesses ORDER BY id"""
+    ).fetchall()
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = datetime.utcnow()
+    lines = []
+
+    for b in businesses:
+        reasons = []
+        eligible = True
+
+        if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
+            eligible = False
+            reasons.append("paused")
+
+        if not business_supports_service(b, service):
+            eligible = False
+            reasons.append("service mismatch")
+
+        if not business_serves_location(b, resolved):
+            eligible = False
+            reasons.append("location mismatch")
+
+        today_row = execute(
+            con,
+            "SELECT COUNT(*) AS c FROM leads WHERE business_id=? AND substr(created_at,1,10)=?",
+            (b["id"], today)
+        ).fetchone()
+        today_count = int(today_row["c"] or 0)
+
+        cap = int(b["daily_lead_cap"] or 0)
+        if cap > 0 and today_count >= cap:
+            eligible = False
+            reasons.append("daily cap reached")
+
+        reserved_until = _parse_utc_timestamp(b["reserved_until"])
+        if reserved_until and reserved_until > now:
+            reasons.append(f"reserved until {reserved_until.strftime('%H:%M:%S')} UTC")
+
+        status = "eligible" if eligible else "not eligible"
+        lines.append(
+            f"{b['name']}: {status}; priority={int(b['routing_priority'] or 0)}; "
+            f"today={today_count}; last={b['last_routed_at'] or 'never'}; "
+            + (", ".join(reasons) if reasons else "ready")
+        )
+
     con.close()
+    return lines
 
 
 def marketplace_reply(message, context=None):
@@ -2599,9 +2714,6 @@ class Handler(BaseHTTPRequestHandler):
 
                 con.commit()
                 con.close()
-
-                # The lead is now truly assigned; update routing rotation state.
-                mark_business_routed(business_id)
 
                 # Notify the business immediately when LeadPilot marks the lead Hot.
                 send_hot_lead_sms(
