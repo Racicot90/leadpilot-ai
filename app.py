@@ -944,23 +944,82 @@ def customer_page_html():
     page = page.replace("LeadPilot Demo Services", html.escape(business.get("name") or BUSINESS_NAME))
     return page
 
+def dashboard_score_reasons(row):
+    """Create a short explanation from stored lead data."""
+    t = (row["message"] or "").lower()
+    reasons = []
+
+    urgency = (row["urgency"] or "Normal").lower()
+    if urgency in ("emergency", "urgent"):
+        reasons.append("Emergency urgency")
+    elif urgency == "high":
+        reasons.append("High urgency")
+
+    if any(x in t for x in [
+        "today", "right now", "asap", "immediately",
+        "need someone", "need it fixed", "appointment", "schedule", "book"
+    ]):
+        reasons.append("Ready to act")
+
+    if any(x in t for x in [
+        "not working", "stopped working", "no ac", "no heat",
+        "leaking", "burst", "flooding", "sparking", "broken"
+    ]):
+        reasons.append("Active problem")
+
+    if row["phone"]:
+        reasons.append("Phone provided")
+
+    if row["zip"]:
+        reasons.append("Location provided")
+
+    if any(x in t for x in [
+        "replace", "replacement", "install", "installation",
+        "new system", "new roof", "water heater", "panel upgrade"
+    ]):
+        reasons.append("Larger-project signal")
+
+    if any(x in t for x in [
+        "thinking about", "later this year", "sometime",
+        "just curious", "price range", "researching", "considering"
+    ]):
+        reasons.append("Research-stage timing")
+
+    return reasons[:4] or ["Basic lead information"]
+
+
 def dashboard_html():
     business = get_business_settings()
     con = db()
 
     rows = execute(
         con,
-        "SELECT * FROM leads WHERE business_id=? ORDER BY id DESC",
+        """SELECT * FROM leads
+           WHERE business_id=?
+           ORDER BY
+             CASE status
+               WHEN 'New' THEN 0
+               WHEN 'Contacted' THEN 1
+               WHEN 'Booked' THEN 2
+               WHEN 'Closed' THEN 3
+               ELSE 4
+             END,
+             lead_score DESC,
+             id DESC""",
         (BUSINESS_ID,)
     ).fetchall()
 
     con.close()
 
     counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
+    quality_counts = {"Hot":0, "Strong":0, "Qualified":0, "Standard":0}
 
     for r in rows:
         status = r["status"] or "New"
         counts[status] = counts.get(status, 0) + 1
+
+        quality = r["qualification"] or "Standard"
+        quality_counts[quality] = quality_counts.get(quality, 0) + 1
 
     cards = ""
 
@@ -972,6 +1031,11 @@ def dashboard_html():
         lead_score = r["lead_score"] or 0
         qualification = r["qualification"] or "Standard"
         recommended_action = r["recommended_action"] or "Follow up and confirm the job details."
+        score_reasons = dashboard_score_reasons(r)
+        reason_chips = "".join(
+            f'<span class="reason-chip">{html.escape(reason)}</span>'
+            for reason in score_reasons
+        )
 
         options = "".join(
             f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
@@ -1004,6 +1068,8 @@ def dashboard_html():
           <div class="ai-box">
             <div class="ai-title">LeadPilot Qualification</div>
             <div><strong>{qualification} lead · {lead_score}/100</strong></div>
+            <div class="reason-row">{reason_chips}</div>
+            <div class="next-label">Recommended next step</div>
             <div class="ai-action">{recommended_action}</div>
           </div>
 
@@ -1065,6 +1131,14 @@ h1{{font-size:28px;margin:0}}
 .ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
 .ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}}
 .ai-action{{font-size:13px;color:#475467;margin-top:4px;line-height:1.35}}
+.reason-row{{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}}
+.reason-chip{{background:#fff;border:1px solid #dbe3ef;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:700;color:#475467}}
+.next-label{{margin-top:11px;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#667085}}
+.priority-summary{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 16px}}
+.priority-pill{{background:#fff;border-radius:12px;padding:11px 12px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
+.priority-pill strong{{display:block;font-size:20px}}
+.priority-pill span{{font-size:11px;color:#667085}}
+.priority-note{{font-size:12px;color:#667085;margin:-5px 0 14px}}
 .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
 .action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
 .action.primary{{background:#172033;color:#fff;border-color:#172033}}
@@ -1079,6 +1153,7 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
  .toplinks{{margin-top:10px}}
  .toplinks a{{margin:0 12px 0 0}}
  .stats{{grid-template-columns:1fr 1fr}}
+ .priority-summary{{grid-template-columns:1fr 1fr}}
  .leads{{grid-template-columns:1fr}}
  h1{{font-size:25px}}
 }}
@@ -1107,6 +1182,14 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
 <div class="stat"><span>Booked</span><b>{counts.get('Booked',0)}</b></div>
 <div class="stat"><span>Closed</span><b>{counts.get('Closed',0)}</b></div>
 </div>
+
+<div class="priority-summary">
+  <div class="priority-pill"><strong>{quality_counts['Hot']}</strong><span>🔥 Hot leads</span></div>
+  <div class="priority-pill"><strong>{quality_counts['Strong']}</strong><span>Strong leads</span></div>
+  <div class="priority-pill"><strong>{quality_counts['Qualified']}</strong><span>Qualified leads</span></div>
+  <div class="priority-pill"><strong>{quality_counts['Standard']}</strong><span>Standard leads</span></div>
+</div>
+<div class="priority-note">New leads are automatically ordered by score so the best opportunities appear first.</div>
 
 <div class="leads">{cards}</div>
 
