@@ -858,13 +858,14 @@ async function sendChat(){
  document.getElementById('urgency').value=chatContext.urgency;
  if(j.issue) document.getElementById('details').value=j.issue;
 
- const nameEl=document.querySelector('input[name="name"]');
- const phoneEl=document.querySelector('input[name="phone"]');
- const emailEl=document.querySelector('input[name="email"]');
- const zipEl=document.querySelector('input[name="zip"]');
+ const nameEl=document.getElementById('name');
+ const phoneEl=document.getElementById('phone');
+ const emailEl=document.getElementById('email');
+ const zipEl=document.getElementById('zip');
+
  if(nameEl && chatContext.customer_name) nameEl.value=chatContext.customer_name;
  if(phoneEl && chatContext.customer_phone) phoneEl.value=chatContext.customer_phone;
- if(emailEl && chatContext.customer_email) emailEl.value=chatContext.customer_email;
+ if(emailEl) emailEl.value=chatContext.customer_email||'';
  if(zipEl && chatContext.customer_zip) zipEl.value=chatContext.customer_zip;
 }
 
