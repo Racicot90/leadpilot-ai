@@ -1156,9 +1156,12 @@ def dashboard_html():
 
           <div class="status-row">
             <label>Lead status</label>
-            <select onchange="updateStatus({r['id']}, this.value)">
-              {options}
-            </select>
+            <div class="status-actions">
+              <button class="status-btn {"active" if status == "New" else ""}" onclick="updateStatus({r['id']}, 'New')">New</button>
+              <button class="status-btn {"active" if status == "Contacted" else ""}" onclick="updateStatus({r['id']}, 'Contacted')">Contacted</button>
+              <button class="status-btn {"active" if status == "Booked" else ""}" onclick="updateStatus({r['id']}, 'Booked')">Booked</button>
+              <button class="status-btn {"active" if status == "Closed" else ""}" onclick="updateStatus({r['id']}, 'Closed')">Closed</button>
+            </div>
             <span id="saved-{r['id']}" class="saved"></span>
           </div>
         </section>
@@ -1217,9 +1220,12 @@ h1{{font-size:28px;margin:0}}
 .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
 .action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
 .action.primary{{background:#172033;color:#fff;border-color:#172033}}
-.status-row{{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:9px;border-top:1px solid #eaecf0;padding-top:14px}}
-select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;background:#fff}}
-.saved{{grid-column:1/-1;color:#067647;font-size:12px;min-height:14px}}
+.status-row{{display:grid;grid-template-columns:1fr;gap:9px;border-top:1px solid #eaecf0;padding-top:14px}}
+.status-row label{{font-weight:800;font-size:13px}}
+.status-actions{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}}
+.status-btn{{padding:10px 6px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#344054;font-weight:800;font-size:11px}}
+.status-btn.active{{background:#172033;color:#fff;border-color:#172033}}
+.saved{{color:#067647;font-size:12px;min-height:14px}}
 .empty{{background:#fff;padding:25px;border-radius:16px}}
 
 @media(max-width:700px){{
@@ -1230,6 +1236,7 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
  .stats{{grid-template-columns:1fr 1fr}}
  .priority-summary{{grid-template-columns:1fr 1fr}}
  .leads{{grid-template-columns:1fr}}
+ .status-actions{{grid-template-columns:1fr 1fr}}
  h1{{font-size:25px}}
 }}
 </style>
@@ -1273,7 +1280,7 @@ select{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:9px;backg
 <script>
 async function updateStatus(id,status){{
  const s=document.getElementById('saved-'+id);
- s.textContent='Saving...';
+ s.textContent='Saving '+status+'...';
 
  const r=await fetch('/api/leads/'+id+'/status',{{
    method:'POST',
@@ -1282,8 +1289,8 @@ async function updateStatus(id,status){{
  }});
 
  if(r.ok){{
-   s.textContent='✓ Saved';
-   setTimeout(()=>location.reload(),400);
+   s.textContent='✓ '+status;
+   setTimeout(()=>location.reload(),350);
  }}else{{
    s.textContent='Could not save';
  }}
