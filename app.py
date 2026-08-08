@@ -128,6 +128,24 @@ def init_db():
             )
         """)
         execute(con, """
+            CREATE TABLE IF NOT EXISTS provider_prospects(
+                id BIGSERIAL PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                business_name TEXT NOT NULL,
+                service TEXT NOT NULL,
+                city TEXT DEFAULT '',
+                county TEXT DEFAULT '',
+                zip TEXT DEFAULT '',
+                contact_name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                website TEXT DEFAULT '',
+                status TEXT DEFAULT 'Prospect',
+                notes TEXT DEFAULT ''
+            )
+        """)
+        execute(con, """
             INSERT INTO businesses(id, name)
             VALUES(1, ?)
             ON CONFLICT (id) DO NOTHING
@@ -198,6 +216,24 @@ def init_db():
                 email TEXT,
                 issue TEXT,
                 status TEXT DEFAULT 'Waiting'
+            )
+        """)
+        execute(con, """
+            CREATE TABLE IF NOT EXISTS provider_prospects(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                business_name TEXT NOT NULL,
+                service TEXT NOT NULL,
+                city TEXT DEFAULT '',
+                county TEXT DEFAULT '',
+                zip TEXT DEFAULT '',
+                contact_name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                website TEXT DEFAULT '',
+                status TEXT DEFAULT 'Prospect',
+                notes TEXT DEFAULT ''
             )
         """)
         execute(con, "INSERT OR IGNORE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
@@ -587,7 +623,7 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 .bizlinks{{display:flex;gap:10px;flex-wrap:wrap}} a{{color:#3448c5;font-weight:700;text-decoration:none}} .success{{background:#dcfae6;color:#05603a;padding:12px;border-radius:10px;margin-bottom:12px}}
 @media(max-width:650px){{.biz{{display:block}} .bizlinks{{margin-top:12px}}}}
 </style></head><body><div class="wrap">
-<div style="margin-bottom:12px"><a href="/coverage-demand">🔥 Coverage Demand</a></div><h1>LeadPilot Businesses</h1>
+<div style="margin-bottom:12px"><a href="/coverage-demand">🔥 Coverage Demand</a> · <a href="/recruiting">Provider Recruiting</a></div><h1>LeadPilot Businesses</h1>
 <div class="muted">Each business gets its own customer page, settings, dashboard, service area, and leads.</div>
 {created}
 <div class="card">
@@ -1120,7 +1156,20 @@ def coverage_demand_html():
         heat = "hot" if g["count"] >= 10 else ("warm" if g["count"] >= 5 else "normal")
         label = "🔥 Recruit now" if g["count"] >= 10 else ("Growing demand" if g["count"] >= 5 else "Demand detected")
         detail = g["county"] or g["city"] or g["area"]
-        demand_cards += f"""<div class="demand-card {heat}"><div><span class="eyebrow">{html.escape(label)}</span><h3>{html.escape(g['service'])}</h3><p>{html.escape(detail)}</p></div><div class="demand-count">{g['count']}<small>waiting</small></div></div>"""
+        recruit_url = (
+            "/recruiting?service=" + quote(g["service"]) +
+            "&city=" + quote(g["city"] or g["area"]) +
+            "&count=" + str(g["count"])
+        )
+        demand_cards += f"""<div class="demand-card {heat}">
+        <div>
+          <span class="eyebrow">{html.escape(label)}</span>
+          <h3>{html.escape(g['service'])}</h3>
+          <p>{html.escape(detail)}</p>
+          <a class="recruit-btn" href="{recruit_url}">Find / Recruit Provider →</a>
+        </div>
+        <div class="demand-count">{g['count']}<small>waiting</small></div>
+        </div>"""
     if not demand_cards:
         demand_cards = '<div class="empty">No unmet coverage demand yet. New waitlist requests will appear here automatically.</div>'
 
@@ -1132,8 +1181,219 @@ def coverage_demand_html():
 
     opportunity = (f"Top recruiting opportunity: {top['service']} in {top['area']} — {top['count']} waiting customer(s)." if top else "LeadPilot will rank recruiting opportunities as waitlist demand comes in.")
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>LeadPilot Coverage Demand</title><style>
-*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
-</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div><div class="summary"><span>Customers currently waiting</span><strong>{waiting_total}</strong><p>{html.escape(opportunity)}</p></div><div class="grid">{demand_cards}</div><h2>Recent coverage requests</h2>{request_rows or '<div class="empty">No requests yet.</div>'}</div></body></html>"""
+*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.recruit-btn{{display:inline-block;margin-top:12px;background:#172033;color:#fff!important;padding:9px 12px;border-radius:9px;font-size:12px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
+</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/recruiting">Provider Recruiting</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div><div class="summary"><span>Customers currently waiting</span><strong>{waiting_total}</strong><p>{html.escape(opportunity)}</p></div><div class="grid">{demand_cards}</div><h2>Recent coverage requests</h2>{request_rows or '<div class="empty">No requests yet.</div>'}</div></body></html>"""
+
+
+
+PROSPECT_STATUSES = ["Prospect", "Contacted", "Interested", "Verification", "Approved", "Live", "Passed"]
+
+
+def create_provider_prospect(business_name, service, city="", county="", zip_code="",
+                             contact_name="", phone="", email="", website="", notes=""):
+    con = db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    if USE_POSTGRES:
+        cur = execute(
+            con,
+            """INSERT INTO provider_prospects
+               (created_at,updated_at,business_name,service,city,county,zip,
+                contact_name,phone,email,website,status,notes)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+               RETURNING id""",
+            (
+                now, now, (business_name or "Unnamed prospect").strip(),
+                (service or "General Repair").strip(), (city or "").strip(),
+                (county or "").strip(), (zip_code or "").strip(),
+                (contact_name or "").strip(), (phone or "").strip(),
+                (email or "").strip(), (website or "").strip(),
+                "Prospect", (notes or "").strip()
+            )
+        )
+        prospect_id = cur.fetchone()["id"]
+    else:
+        cur = execute(
+            con,
+            """INSERT INTO provider_prospects
+               (created_at,updated_at,business_name,service,city,county,zip,
+                contact_name,phone,email,website,status,notes)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                now, now, (business_name or "Unnamed prospect").strip(),
+                (service or "General Repair").strip(), (city or "").strip(),
+                (county or "").strip(), (zip_code or "").strip(),
+                (contact_name or "").strip(), (phone or "").strip(),
+                (email or "").strip(), (website or "").strip(),
+                "Prospect", (notes or "").strip()
+            )
+        )
+        prospect_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return prospect_id
+
+
+def update_provider_prospect_status(prospect_id, status):
+    if status not in PROSPECT_STATUSES:
+        return False
+    con = db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    cur = execute(
+        con,
+        "UPDATE provider_prospects SET status=?, updated_at=? WHERE id=?",
+        (status, now, prospect_id)
+    )
+    con.commit()
+    changed = cur.rowcount
+    con.close()
+    return bool(changed)
+
+
+def recruiting_pipeline_html(prefill_service="", prefill_city="", prefill_count=""):
+    con = db()
+    rows = execute(
+        con,
+        "SELECT * FROM provider_prospects ORDER BY updated_at DESC, id DESC"
+    ).fetchall()
+    con.close()
+
+    counts = {s: 0 for s in PROSPECT_STATUSES}
+    for r in rows:
+        status = (r["status"] or "Prospect").strip()
+        counts[status] = counts.get(status, 0) + 1
+
+    cards = ""
+    for r in rows:
+        status = (r["status"] or "Prospect").strip()
+        status_options = "".join(
+            f'<option value="{html.escape(s)}" {"selected" if s == status else ""}>{html.escape(s)}</option>'
+            for s in PROSPECT_STATUSES
+        )
+        place = ", ".join(x for x in [
+            (r["city"] or "").strip(),
+            (r["county"] or "").strip()
+        ] if x) or "Area not set"
+        contact_parts = [x for x in [
+            (r["contact_name"] or "").strip(),
+            (r["phone"] or "").strip(),
+            (r["email"] or "").strip()
+        ] if x]
+        contact = " · ".join(contact_parts) or "No contact details yet"
+        cards += f"""
+        <div class="prospect">
+          <div class="prospect-top">
+            <div>
+              <span class="eyebrow">{html.escape(r['service'] or 'General Repair')}</span>
+              <h3>{html.escape(r['business_name'] or 'Unnamed prospect')}</h3>
+              <p>{html.escape(place)}{(' · ' + html.escape(r['zip'])) if r['zip'] else ''}</p>
+            </div>
+            <span class="stage stage-{status.lower().replace(' ','-')}">{html.escape(status)}</span>
+          </div>
+          <div class="contact">{html.escape(contact)}</div>
+          {f'<div class="notes">{html.escape(r["notes"])}</div>' if r["notes"] else ''}
+          <form method="POST" action="/recruiting/status">
+            <input type="hidden" name="prospect_id" value="{r['id']}">
+            <label>Pipeline stage</label>
+            <div class="status-row">
+              <select name="status">{status_options}</select>
+              <button type="submit">Update</button>
+            </div>
+          </form>
+        </div>
+        """
+
+    if not cards:
+        cards = '<div class="empty">No provider prospects yet. Use Coverage Demand to decide who to recruit first.</div>'
+
+    prefill_note = ""
+    if prefill_count:
+        prefill_note = f"{prefill_count} customer(s) currently waiting in this market."
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot Provider Recruiting</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:950px;margin:auto;padding:18px}}
+a{{color:#3448c5;text-decoration:none;font-weight:800}}
+.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}
+h1{{margin:8px 0 4px}} .sub{{color:#667085;margin-bottom:18px}}
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}}
+.stat{{background:#fff;border-radius:14px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
+.stat span{{font-size:11px;color:#667085}} .stat strong{{display:block;font-size:25px;margin-top:4px}}
+.card,.prospect{{background:#fff;border-radius:16px;padding:18px;margin-bottom:12px;box-shadow:0 5px 18px rgba(0,0,0,.05)}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+label{{display:block;font-size:12px;font-weight:800;margin:10px 0 5px;color:#475467}}
+input,textarea,select{{width:100%;padding:11px;border:1px solid #d0d5dd;border-radius:10px;font-size:15px;background:#fff}}
+button{{border:0;border-radius:10px;background:#172033;color:#fff;font-weight:800;padding:11px 15px}}
+.create-btn{{width:100%;margin-top:14px;padding:13px}}
+.prospect-top{{display:flex;justify-content:space-between;gap:12px}}
+.eyebrow{{font-size:11px;text-transform:uppercase;color:#667085;font-weight:900}}
+h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:13px}}
+.stage{{white-space:nowrap;height:max-content;padding:7px 10px;border-radius:999px;background:#eef2f6;font-size:11px;font-weight:900}}
+.stage-live,.stage-approved{{background:#dcfae6;color:#05603a}}
+.stage-interested,.stage-verification{{background:#fff0c2;color:#93370d}}
+.stage-passed{{background:#f2f4f7;color:#667085}}
+.contact{{margin-top:12px;font-weight:700;font-size:13px}}
+.notes{{margin-top:10px;padding:10px;background:#f8fafc;border-radius:9px;color:#475467;font-size:13px}}
+.status-row{{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}}
+.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}
+@media(max-width:700px){{
+ .stats{{grid-template-columns:1fr 1fr}}
+ .grid{{grid-template-columns:1fr}}
+ .prospect-top{{display:block}}
+ .stage{{display:inline-block;margin-top:8px}}
+}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">
+<a href="/dashboard">Dashboard</a>
+<a href="/coverage-demand">Coverage Demand</a> <a href="/recruiting">Provider Recruiting</a>
+<a href="/businesses">Businesses</a>
+<a href="/">Customer page</a>
+<a href="/logout">Log out</a>
+</div>
+
+<h1>Provider Recruiting</h1>
+<div class="sub">Turn unmet customer demand into a provider recruiting pipeline.</div>
+
+<div class="stats">
+  <div class="stat"><span>Prospects</span><strong>{counts.get('Prospect',0)}</strong></div>
+  <div class="stat"><span>Interested</span><strong>{counts.get('Interested',0)}</strong></div>
+  <div class="stat"><span>Verification</span><strong>{counts.get('Verification',0)}</strong></div>
+  <div class="stat"><span>Live providers</span><strong>{counts.get('Live',0)}</strong></div>
+</div>
+
+<div class="card">
+<h2 style="margin-top:0">Add provider prospect</h2>
+<form method="POST" action="/recruiting">
+<div class="grid">
+<div><label>Business name</label><input name="business_name" placeholder="Lake City Roofing Co." required></div>
+<div><label>Service</label><input name="service" value="{html.escape(prefill_service, quote=True)}" placeholder="Roofing" required></div>
+<div><label>City</label><input name="city" value="{html.escape(prefill_city, quote=True)}"></div>
+<div><label>County</label><input name="county"></div>
+<div><label>ZIP</label><input name="zip"></div>
+<div><label>Contact name</label><input name="contact_name"></div>
+<div><label>Phone</label><input name="phone"></div>
+<div><label>Email</label><input name="email" type="email"></div>
+</div>
+<label>Website</label><input name="website">
+<label>Recruiting notes</label>
+<textarea name="notes" rows="3" placeholder="Why this market matters, outreach notes, etc.">{html.escape(prefill_note)}</textarea>
+<button class="create-btn" type="submit">Add to recruiting pipeline</button>
+</form>
+</div>
+
+<h2>Recruiting pipeline</h2>
+{cards}
+</div>
+</body>
+</html>"""
 
 
 def marketplace_reply(message, context=None):
@@ -3016,6 +3276,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_bytes(coverage_demand_html().encode())
 
+        elif p == "/recruiting":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+            self.send_bytes(
+                recruiting_pipeline_html(
+                    prefill_service=query.get("service", [""])[0],
+                    prefill_city=query.get("city", [""])[0],
+                    prefill_count=query.get("count", [""])[0]
+                ).encode()
+            )
+
         elif p == "/login":
             if logged_in(self.headers):
                 self.redirect("/dashboard")
@@ -3130,6 +3402,42 @@ class Handler(BaseHTTPRequestHandler):
                     form.get("alert_phone", "")
                 )
                 self.redirect(f"/businesses?created={business_id}")
+                return
+
+            if p == "/recruiting":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                form = self.read_form()
+                create_provider_prospect(
+                    form.get("business_name", ""),
+                    form.get("service", ""),
+                    city=form.get("city", ""),
+                    county=form.get("county", ""),
+                    zip_code=form.get("zip", ""),
+                    contact_name=form.get("contact_name", ""),
+                    phone=form.get("phone", ""),
+                    email=form.get("email", ""),
+                    website=form.get("website", ""),
+                    notes=form.get("notes", "")
+                )
+                self.redirect("/recruiting")
+                return
+
+            if p == "/recruiting/status":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                form = self.read_form()
+                try:
+                    prospect_id = int(form.get("prospect_id", "0"))
+                except Exception:
+                    prospect_id = 0
+                update_provider_prospect_status(
+                    prospect_id,
+                    form.get("status", "Prospect")
+                )
+                self.redirect("/recruiting")
                 return
 
             if p == "/settings":
