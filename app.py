@@ -1063,6 +1063,28 @@ def dashboard_score_reasons(row):
     return reasons[:4] or ["Basic lead information"]
 
 
+def lead_followup_status(row):
+    """Return a simple follow-up recommendation for the dashboard."""
+    status = (row["status"] or "New").strip()
+    score = int(row["lead_score"] or 0)
+    qualification = (row["qualification"] or "Standard").strip()
+
+    if status == "Closed":
+        return ("done", "Closed — no follow-up needed")
+    if status == "Booked":
+        return ("booked", "Booked — customer is scheduled")
+    if status == "Contacted":
+        return ("contacted", "Contacted — continue follow-up as needed")
+
+    if qualification == "Hot" or score >= 90:
+        return ("urgent", "🔥 Call now — highest-priority lead")
+    if qualification == "Strong" or score >= 75:
+        return ("soon", "Follow up within 10 minutes")
+    if qualification == "Qualified" or score >= 55:
+        return ("today", "Follow up today")
+    return ("normal", "Standard follow-up")
+
+
 def dashboard_html():
     business = get_business_settings()
     con = db()
@@ -1070,8 +1092,8 @@ def dashboard_html():
     rows = execute(
         con,
         """SELECT * FROM leads
-   WHERE business_id=?
-   ORDER BY lead_score DESC, id DESC""",
+           WHERE business_id=?
+           ORDER BY lead_score DESC, id DESC""",
         (BUSINESS_ID,)
     ).fetchall()
 
@@ -1079,6 +1101,7 @@ def dashboard_html():
 
     counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
     quality_counts = {"Hot":0, "Strong":0, "Qualified":0, "Standard":0}
+    followup_count = 0
 
     for r in rows:
         status = r["status"] or "New"
@@ -1086,6 +1109,9 @@ def dashboard_html():
 
         quality = r["qualification"] or "Standard"
         quality_counts[quality] = quality_counts.get(quality, 0) + 1
+
+        if status == "New":
+            followup_count += 1
 
     cards = ""
 
@@ -1097,6 +1123,7 @@ def dashboard_html():
         lead_score = r["lead_score"] or 0
         qualification = r["qualification"] or "Standard"
         recommended_action = r["recommended_action"] or "Follow up and confirm the job details."
+        followup_class, followup_text = lead_followup_status(r)
         score_reasons = dashboard_score_reasons(r)
         reason_chips = "".join(
             f'<span class="reason-chip">{html.escape(reason)}</span>'
@@ -1137,6 +1164,10 @@ def dashboard_html():
             <div class="reason-row">{reason_chips}</div>
             <div class="next-label">Recommended next step</div>
             <div class="ai-action">{recommended_action}</div>
+          </div>
+
+          <div class="followup-banner followup-{followup_class}">
+            <strong>Follow-up:</strong> {followup_text}
           </div>
 
           <div class="actions">
@@ -1208,6 +1239,18 @@ h1{{font-size:28px;margin:0}}
 .priority-pill strong{{display:block;font-size:20px}}
 .priority-pill span{{font-size:11px;color:#667085}}
 .priority-note{{font-size:12px;color:#667085;margin:-5px 0 14px}}
+.followup-summary{{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
+.followup-summary span{{display:block;font-size:12px;color:#667085}}
+.followup-summary strong{{font-size:28px}}
+.followup-summary p{{margin:0;color:#667085;font-size:12px;max-width:460px}}
+.followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}}
+.followup-urgent{{background:#fee4e2;color:#b42318}}
+.followup-soon{{background:#fff0c2;color:#93370d}}
+.followup-today{{background:#eaf2ff;color:#175cd3}}
+.followup-normal{{background:#f2f4f7;color:#344054}}
+.followup-contacted{{background:#eef4ff;color:#3448c5}}
+.followup-booked{{background:#dcfae6;color:#05603a}}
+.followup-done{{background:#f2f4f7;color:#667085}}
 .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
 .action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
 .action.primary{{background:#172033;color:#fff;border-color:#172033}}
@@ -1226,6 +1269,8 @@ h1{{font-size:28px;margin:0}}
  .toplinks a{{margin:0 12px 0 0}}
  .stats{{grid-template-columns:1fr 1fr}}
  .priority-summary{{grid-template-columns:1fr 1fr}}
+ .followup-summary{{display:block}}
+ .followup-summary p{{margin-top:8px}}
  .leads{{grid-template-columns:1fr}}
  .status-actions{{grid-template-columns:1fr 1fr}}
  h1{{font-size:25px}}
@@ -1256,6 +1301,14 @@ h1{{font-size:28px;margin:0}}
 <div class="stat"><span>Closed</span><b>{counts.get('Closed',0)}</b></div>
 </div>
 
+<div class="followup-summary">
+  <div>
+    <span>Needs follow-up</span>
+    <strong>{followup_count}</strong>
+  </div>
+  <p>New leads stay in this queue until you mark them Contacted, Booked, or Closed.</p>
+</div>
+
 <div class="priority-summary">
   <div class="priority-pill"><strong>{quality_counts['Hot']}</strong><span>🔥 Hot leads</span></div>
   <div class="priority-pill"><strong>{quality_counts['Strong']}</strong><span>Strong leads</span></div>
@@ -1280,21 +1333,21 @@ async function updateStatus(id,status){{
  }});
 
  if(r.ok){{
-  const row=s.closest('.status-row');
-  const buttons=row.querySelectorAll('.status-btn');
+   const row=s.closest('.status-row');
+   const buttons=row.querySelectorAll('.status-btn');
 
-  buttons.forEach(btn=>{{
-    btn.classList.toggle(
-      'active',
-      btn.textContent.trim() === status
-    );
-  }});
+   buttons.forEach(btn=>{{
+     btn.classList.toggle(
+       'active',
+       btn.textContent.trim() === status
+     );
+   }});
 
-  s.textContent='✓ '+status;
-  setTimeout(()=>location.reload(),900);
-}}else{{
-  s.textContent='Could not save';
-    }}
+   s.textContent='✓ '+status;
+   setTimeout(()=>location.reload(),900);
+ }}else{{
+   s.textContent='Could not save';
+ }}
 }}
 </script>
 
