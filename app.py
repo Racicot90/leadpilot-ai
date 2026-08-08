@@ -9,7 +9,7 @@ import time
 import html
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 from urllib.request import Request, urlopen
 from http.cookies import SimpleCookie
 
@@ -245,7 +245,7 @@ LeadPilot now uses these settings when answering customers about the business, s
 <div class="hint">Separate services with commas.</div>
 
 <label>Service area</label>
-<input name="service_area" value="{esc(s['service_area'], quote=True)}" placeholder="Jacksonville, St. Augustine, ZIP codes...">
+<input name="service_area" value="{esc(s['service_area'], quote=True)}" placeholder="Orange County, Orlando, 32801, 32803..."><div class="hint">Enter Florida counties, cities, ZIP codes, or “Florida” for statewide coverage. Separate multiple areas with commas.</div>
 
 <label>Business email</label>
 <input name="email" type="email" value="{esc(s['email'], quote=True)}" placeholder="office@example.com">
@@ -339,7 +339,7 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 <form method="POST" action="/businesses">
 <label>Business name</label><input name="name" required>
 <label>Services</label><textarea name="services" placeholder="HVAC, plumbing, roofing"></textarea>
-<label>Service area</label><input name="service_area" placeholder="Orlando, Winter Park, ZIP codes...">
+<label>Service area</label><input name="service_area" placeholder="Orange County, Orlando, 32801, 32803..."><div style="font-size:12px;color:#667085;margin-top:5px">Enter Florida counties, cities, ZIP codes, or “Florida” for statewide coverage. Separate multiple areas with commas.</div>
 <label>Email</label><input name="email" type="email">
 <label>Hot-lead alert phone</label><input name="alert_phone" placeholder="+19045551234">
 <button type="submit">Create business page</button>
@@ -348,6 +348,118 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 <h2>Your businesses</h2>
 {items or '<div class="card">No businesses yet.</div>'}
 </div></body></html>"""
+
+
+# --- Florida Location Engine V1 -------------------------------------------
+# Beta geocoding uses OpenStreetMap Nominatim to translate a Florida city or
+# ZIP into normalized city/county/ZIP aliases. Results are cached in memory.
+LOCATION_CACHE = {}
+
+def _location_cache_key(value):
+    return " ".join((value or "").lower().strip().split())
+
+def resolve_florida_location(value):
+    """Resolve a Florida city or ZIP into normalized geographic aliases."""
+    raw = (value or "").strip(" .?!,")
+    key = _location_cache_key(raw)
+    if not key:
+        return None
+
+    if key in LOCATION_CACHE:
+        return LOCATION_CACHE[key]
+
+    # Ask specifically for Florida/USA so a city name elsewhere is not routed
+    # to a Florida contractor by accident.
+    zip_match = re.search(r"\b\d{5}\b", raw)
+    if zip_match:
+        query = f"{zip_match.group(0)}, Florida, USA"
+    else:
+        query = f"{raw}, Florida, USA"
+
+    url = (
+        "https://nominatim.openstreetmap.org/search"
+        f"?format=jsonv2&addressdetails=1&limit=3&countrycodes=us&q={quote(query)}"
+    )
+
+    req = Request(
+        url,
+        headers={
+            "User-Agent": "LeadPilotAI-beta/1.0",
+            "Accept": "application/json"
+        }
+    )
+
+    try:
+        with urlopen(req, timeout=8) as resp:
+            results = json.loads(resp.read().decode("utf-8"))
+
+        chosen = None
+        for item in results:
+            address = item.get("address") or {}
+            state = (address.get("state") or "").strip()
+            state_code = (address.get("ISO3166-2-lvl4") or "").strip().upper()
+            if state.lower() == "florida" or state_code == "US-FL":
+                chosen = item
+                break
+
+        if not chosen:
+            LOCATION_CACHE[key] = None
+            return None
+
+        address = chosen.get("address") or {}
+
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("hamlet")
+            or ""
+        ).strip()
+
+        county = (address.get("county") or "").strip()
+        postcode = (address.get("postcode") or "").strip()
+        state = (address.get("state") or "Florida").strip()
+
+        aliases = set()
+        for item in [raw, city, county, postcode, state]:
+            normalized = normalize_place(item)
+            if normalized:
+                aliases.add(normalized)
+
+        # County values sometimes include the word "County"; keep both forms.
+        county_norm = normalize_place(county)
+        if county_norm.endswith(" county"):
+            aliases.add(county_norm[:-7].strip())
+
+        resolved = {
+            "input": raw,
+            "city": city,
+            "county": county,
+            "postcode": postcode,
+            "state": state,
+            "aliases": sorted(aliases),
+            "display": ", ".join(
+                x for x in [city, county, "Florida"] if x
+            )
+        }
+        LOCATION_CACHE[key] = resolved
+        return resolved
+
+    except Exception as e:
+        print("Florida location lookup error:", repr(e), flush=True)
+        # Preserve the existing text matcher as a graceful fallback.
+        fallback = {
+            "input": raw,
+            "city": "",
+            "county": "",
+            "postcode": zip_match.group(0) if zip_match else "",
+            "state": "Florida",
+            "aliases": [normalize_place(raw)],
+            "display": raw
+        }
+        LOCATION_CACHE[key] = fallback
+        return fallback
 
 
 def normalize_place(value):
@@ -374,26 +486,46 @@ def business_supports_service(business, service):
     return any(service_l in s or s in service_l for s in offered)
 
 
-def business_serves_location(business, location):
-    area = normalize_place(business["service_area"] or "")
-    loc = normalize_place(location)
-
-    if not area or not loc:
+def business_serves_location(business, resolved_location):
+    """Match configured business territory against resolved city/county/ZIP."""
+    if not resolved_location:
         return False
 
-    if loc in area:
-        return True
-
-    configured = [
+    configured_parts = [
         normalize_place(p)
-        for p in (business["service_area"] or "").split(",")
+        for p in re.split(r"[,;\n]+", business["service_area"] or "")
         if p.strip()
     ]
-    return any(loc == p or loc in p or p in loc for p in configured)
+    if not configured_parts:
+        return False
+
+    aliases = {
+        normalize_place(a)
+        for a in (resolved_location.get("aliases") or [])
+        if normalize_place(a)
+    }
+
+    for configured in configured_parts:
+        if configured in ("florida", "statewide", "all florida", "florida statewide"):
+            return True
+
+        for alias in aliases:
+            if configured == alias:
+                return True
+            if configured and alias and (
+                configured in alias or alias in configured
+            ):
+                return True
+
+    return False
 
 
 def match_business_for_lead(service, location):
-    """Choose an eligible business fairly using lowest lead count, then ID."""
+    """Resolve Florida geography, then choose an eligible business fairly."""
+    resolved = resolve_florida_location(location)
+    if not resolved:
+        return None, None
+
     con = db()
     businesses = execute(
         con,
@@ -403,13 +535,15 @@ def match_business_for_lead(service, location):
     matches = [
         b for b in businesses
         if business_supports_service(b, service)
-        and business_serves_location(b, location)
+        and business_serves_location(b, resolved)
     ]
 
     if not matches:
         con.close()
-        return None
+        return None, resolved
 
+    # Beta fairness: send the next lead to the eligible business with the
+    # fewest leads so far. Business ID breaks ties deterministically.
     ranked = []
     for b in matches:
         count_row = execute(
@@ -421,7 +555,7 @@ def match_business_for_lead(service, location):
 
     con.close()
     ranked.sort(key=lambda x: (x[0], x[1]))
-    return ranked[0][2]
+    return ranked[0][2], resolved
 
 
 def marketplace_reply(message, context=None):
@@ -466,25 +600,38 @@ def marketplace_reply(message, context=None):
 
     if step == "location":
         location = msg
-        matched = match_business_for_lead(service, location)
+        matched, resolved = match_business_for_lead(service, location)
 
-        if not matched:
+        if not resolved:
             return {
-                "reply": f"I don't currently have a {service.lower()} provider in {location}. Try another nearby city or ZIP code, or check back as more businesses join LeadPilot.",
+                "reply": "I couldn't verify that as a Florida city or ZIP code. Please send a Florida city or 5-digit ZIP code.",
                 "service": service,
                 "urgency": urgency,
                 "issue": issue,
                 "intake_step": "location",
                 "matched_business_id": 0,
-                "customer_zip": _extract_zip(location)
+                "customer_zip": ""
+            }
+
+        if not matched:
+            place = resolved.get("display") or location
+            return {
+                "reply": f"I recognize {place}, but I don't currently have a {service.lower()} provider covering that area. Try another nearby city or ZIP code, or check back as more businesses join LeadPilot.",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue,
+                "intake_step": "location",
+                "matched_business_id": 0,
+                "customer_zip": resolved.get("postcode") or _extract_zip(location)
             }
 
         matched_business_id = int(matched["id"])
         matched_business_name = matched["name"] or "a local provider"
-        customer_zip = _extract_zip(location) or location
+        customer_zip = resolved.get("postcode") or _extract_zip(location) or location
+        place = resolved.get("display") or location
 
         return {
-            "reply": f"I found {matched_business_name}, which serves {location} and offers {service}. What's your name?",
+            "reply": f"I found {matched_business_name}, which covers {place} and offers {service}. What's your name?",
             "service": service,
             "urgency": urgency,
             "issue": issue,
