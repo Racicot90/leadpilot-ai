@@ -67,7 +67,11 @@ def init_db():
                 services TEXT DEFAULT '',
                 service_area TEXT DEFAULT '',
                 email TEXT DEFAULT '',
-                alert_phone TEXT DEFAULT ''
+                alert_phone TEXT DEFAULT '',
+                routing_enabled INTEGER DEFAULT 1,
+                routing_priority INTEGER DEFAULT 0,
+                daily_lead_cap INTEGER DEFAULT 0,
+                last_routed_at TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -101,7 +105,11 @@ def init_db():
                 services TEXT DEFAULT '',
                 service_area TEXT DEFAULT '',
                 email TEXT DEFAULT '',
-                alert_phone TEXT DEFAULT ''
+                alert_phone TEXT DEFAULT '',
+                routing_enabled INTEGER DEFAULT 1,
+                routing_priority INTEGER DEFAULT 0,
+                daily_lead_cap INTEGER DEFAULT 0,
+                last_routed_at TEXT DEFAULT ''
             )
         """)
         execute(con, """
@@ -130,6 +138,10 @@ def init_db():
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS service_area TEXT DEFAULT ''")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''")
         execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS alert_phone TEXT DEFAULT ''")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS routing_enabled INTEGER DEFAULT 1")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS routing_priority INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS daily_lead_cap INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_routed_at TEXT DEFAULT ''")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
@@ -141,6 +153,10 @@ def init_db():
             "ALTER TABLE businesses ADD COLUMN service_area TEXT DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN email TEXT DEFAULT ''",
             "ALTER TABLE businesses ADD COLUMN alert_phone TEXT DEFAULT ''",
+            "ALTER TABLE businesses ADD COLUMN routing_enabled INTEGER DEFAULT 1",
+            "ALTER TABLE businesses ADD COLUMN routing_priority INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN daily_lead_cap INTEGER DEFAULT 0",
+            "ALTER TABLE businesses ADD COLUMN last_routed_at TEXT DEFAULT ''",
             "ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0",
             "ALTER TABLE leads ADD COLUMN qualification TEXT DEFAULT 'Standard'",
             "ALTER TABLE leads ADD COLUMN recommended_action TEXT"
@@ -158,7 +174,7 @@ def get_business_settings(business_id=BUSINESS_ID):
     con = db()
     row = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone FROM businesses WHERE id=?",
+        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at FROM businesses WHERE id=?",
         (business_id,)
     ).fetchone()
     con.close()
@@ -170,7 +186,11 @@ def get_business_settings(business_id=BUSINESS_ID):
             "services": "",
             "service_area": "",
             "email": "",
-            "alert_phone": NOTIFY_PHONE
+            "alert_phone": NOTIFY_PHONE,
+            "routing_enabled": 1,
+            "routing_priority": 0,
+            "daily_lead_cap": 0,
+            "last_routed_at": ""
         }
 
     return {
@@ -179,20 +199,27 @@ def get_business_settings(business_id=BUSINESS_ID):
         "services": row["services"] or "",
         "service_area": row["service_area"] or "",
         "email": row["email"] or "",
-        "alert_phone": row["alert_phone"] or NOTIFY_PHONE
+        "alert_phone": row["alert_phone"] or NOTIFY_PHONE,
+        "routing_enabled": int(row["routing_enabled"] if row["routing_enabled"] is not None else 1),
+        "routing_priority": int(row["routing_priority"] or 0),
+        "daily_lead_cap": int(row["daily_lead_cap"] or 0),
+        "last_routed_at": row["last_routed_at"] or ""
     }
 
-def save_business_settings(name, services, service_area, email, alert_phone, business_id=BUSINESS_ID):
+def save_business_settings(name, services, service_area, email, alert_phone, routing_enabled=1, routing_priority=0, daily_lead_cap=0, business_id=BUSINESS_ID):
     con = db()
     execute(
         con,
-        "UPDATE businesses SET name=?, services=?, service_area=?, email=?, alert_phone=? WHERE id=?",
+        "UPDATE businesses SET name=?, services=?, service_area=?, email=?, alert_phone=?, routing_enabled=?, routing_priority=?, daily_lead_cap=? WHERE id=?",
         (
             (name or BUSINESS_NAME).strip(),
             (services or "").strip(),
             (service_area or "").strip(),
             (email or "").strip(),
             (alert_phone or "").strip(),
+            1 if str(routing_enabled) in ("1", "true", "on", "yes") else 0,
+            max(0, min(int(routing_priority or 0), 2)),
+            max(0, int(daily_lead_cap or 0)),
             business_id
         )
     )
@@ -217,7 +244,7 @@ body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
 h1{{margin:0 0 6px;font-size:28px}}
 .sub{{color:#667085;margin-bottom:20px}}
 label{{display:block;font-weight:800;margin:14px 0 6px}}
-input,textarea{{width:100%;padding:13px;border:1px solid #d0d5dd;border-radius:10px;font-size:16px;font-family:inherit}}
+input,textarea,select{{width:100%;padding:13px;border:1px solid #d0d5dd;border-radius:10px;font-size:16px;font-family:inherit}}
 textarea{{min-height:90px;resize:vertical}}
 .hint{{font-size:12px;color:#667085;margin-top:5px}}
 button{{width:100%;padding:14px;border:0;border-radius:10px;background:#172033;color:#fff;font-weight:800;font-size:16px;margin-top:20px}}
@@ -254,6 +281,24 @@ LeadPilot now uses these settings when answering customers about the business, s
 <input name="alert_phone" value="{esc(s['alert_phone'], quote=True)}" placeholder="+19045551234">
 <div class="hint">During the Twilio trial, this must be a verified recipient.</div>
 
+<label>Marketplace routing</label>
+<select name="routing_enabled">
+  <option value="1" {"selected" if s["routing_enabled"] else ""}>Accept marketplace leads</option>
+  <option value="0" {"selected" if not s["routing_enabled"] else ""}>Pause marketplace leads</option>
+</select>
+
+<label>Routing priority</label>
+<select name="routing_priority">
+  <option value="0" {"selected" if s["routing_priority"] == 0 else ""}>Standard</option>
+  <option value="1" {"selected" if s["routing_priority"] == 1 else ""}>Priority</option>
+  <option value="2" {"selected" if s["routing_priority"] == 2 else ""}>Premium</option>
+</select>
+<div class="hint">Higher tiers are considered first. Businesses on the same tier rotate fairly.</div>
+
+<label>Daily marketplace lead cap</label>
+<input name="daily_lead_cap" type="number" min="0" value="{s['daily_lead_cap']}">
+<div class="hint">0 means unlimited. Once the cap is reached, LeadPilot skips this business until the next UTC day.</div>
+
 <button type="submit">Save business settings</button>
 </form>
 </div>
@@ -265,7 +310,7 @@ def list_businesses():
     con = db()
     rows = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone FROM businesses ORDER BY id"
+        "SELECT id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at FROM businesses ORDER BY id"
     ).fetchall()
     con.close()
     return rows
@@ -280,15 +325,19 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
 
     execute(
         con,
-        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone)
-           VALUES(?,?,?,?,?,?)""",
+        """INSERT INTO businesses(id,name,services,service_area,email,alert_phone,routing_enabled,routing_priority,daily_lead_cap,last_routed_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (
             int(new_id),
             (name or f"Business {new_id}").strip(),
             (services or "").strip(),
             (service_area or "").strip(),
             (email or "").strip(),
-            (alert_phone or "").strip()
+            (alert_phone or "").strip(),
+            1,
+            0,
+            0,
+            ""
         )
     )
     con.commit()
@@ -304,7 +353,8 @@ def businesses_html(created_id=None):
         items += f"""
         <div class="biz">
           <div><strong>{html.escape(r['name'] or 'Unnamed business')}</strong>
-          <span>{html.escape(r['service_area'] or 'No service area yet')}</span></div>
+          <span>{html.escape(r['service_area'] or 'No service area yet')}</span>
+          <span>{"Accepting leads" if r["routing_enabled"] else "Routing paused"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span></div>
           <div class="bizlinks">
             <a href="/b/{bid}">Customer page</a>
             <a href="/dashboard?business={bid}">Dashboard</a>
@@ -521,7 +571,21 @@ def business_serves_location(business, resolved_location):
 
 
 def match_business_for_lead(service, location):
-    """Resolve Florida geography, then choose an eligible business fairly."""
+    """
+    Multi-Business Routing V1.
+
+    Eligibility:
+      1. Marketplace routing is enabled.
+      2. Business offers the requested service.
+      3. Business covers the resolved Florida location.
+      4. Daily lead cap has not been reached.
+
+    Ranking:
+      1. Higher routing priority first.
+      2. Fewer marketplace leads today.
+      3. Oldest last-routed timestamp.
+      4. Business ID for a stable tie-breaker.
+    """
     resolved = resolve_florida_location(location)
     if not resolved:
         return None, None
@@ -529,33 +593,67 @@ def match_business_for_lead(service, location):
     con = db()
     businesses = execute(
         con,
-        "SELECT id,name,services,service_area,email,alert_phone FROM businesses ORDER BY id"
+        """SELECT id,name,services,service_area,email,alert_phone,
+                  routing_enabled,routing_priority,daily_lead_cap,last_routed_at
+           FROM businesses
+           ORDER BY id"""
     ).fetchall()
 
-    matches = [
-        b for b in businesses
-        if business_supports_service(b, service)
-        and business_serves_location(b, resolved)
-    ]
-
-    if not matches:
-        con.close()
-        return None, resolved
-
-    # Beta fairness: send the next lead to the eligible business with the
-    # fewest leads so far. Business ID breaks ties deterministically.
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     ranked = []
-    for b in matches:
-        count_row = execute(
+
+    for b in businesses:
+        if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
+            continue
+        if not business_supports_service(b, service):
+            continue
+        if not business_serves_location(b, resolved):
+            continue
+
+        today_row = execute(
             con,
-            "SELECT COUNT(*) AS c FROM leads WHERE business_id=?",
-            (b["id"],)
+            """SELECT COUNT(*) AS c
+               FROM leads
+               WHERE business_id=? AND substr(created_at,1,10)=?""",
+            (b["id"], today)
         ).fetchone()
-        ranked.append((int(count_row["c"] or 0), int(b["id"]), b))
+        today_count = int(today_row["c"] or 0)
+
+        cap = int(b["daily_lead_cap"] or 0)
+        if cap > 0 and today_count >= cap:
+            continue
+
+        priority = int(b["routing_priority"] or 0)
+        last_routed = (b["last_routed_at"] or "").strip()
+
+        # Blank means never routed, so it sorts before any real timestamp.
+        ranked.append((
+            -priority,
+            today_count,
+            last_routed,
+            int(b["id"]),
+            b
+        ))
 
     con.close()
-    ranked.sort(key=lambda x: (x[0], x[1]))
-    return ranked[0][2], resolved
+
+    if not ranked:
+        return None, resolved
+
+    ranked.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    return ranked[0][4], resolved
+
+
+def mark_business_routed(business_id):
+    """Record a completed marketplace routing event."""
+    con = db()
+    execute(
+        con,
+        "UPDATE businesses SET last_routed_at=? WHERE id=?",
+        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), business_id)
+    )
+    con.commit()
+    con.close()
 
 
 def marketplace_reply(message, context=None):
@@ -2370,6 +2468,9 @@ class Handler(BaseHTTPRequestHandler):
                     form.get("service_area", ""),
                     form.get("email", ""),
                     form.get("alert_phone", ""),
+                    routing_enabled=form.get("routing_enabled", "1"),
+                    routing_priority=form.get("routing_priority", "0"),
+                    daily_lead_cap=form.get("daily_lead_cap", "0"),
                     business_id=business_id
                 )
                 self.redirect(f"/settings?business={business_id}&saved=1")
@@ -2498,6 +2599,9 @@ class Handler(BaseHTTPRequestHandler):
 
                 con.commit()
                 con.close()
+
+                # The lead is now truly assigned; update routing rotation state.
+                mark_business_routed(business_id)
 
                 # Notify the business immediately when LeadPilot marks the lead Hot.
                 send_hot_lead_sms(
