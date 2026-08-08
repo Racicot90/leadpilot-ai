@@ -112,6 +112,20 @@ def init_db():
             )
         """)
         execute(con, """
+            CREATE TABLE IF NOT EXISTS coverage_waitlist(
+                id BIGSERIAL PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                service TEXT NOT NULL,
+                location TEXT,
+                zip TEXT,
+                name TEXT,
+                phone TEXT,
+                email TEXT,
+                issue TEXT,
+                status TEXT DEFAULT 'Waiting'
+            )
+        """)
+        execute(con, """
             INSERT INTO businesses(id, name)
             VALUES(1, ?)
             ON CONFLICT (id) DO NOTHING
@@ -166,6 +180,20 @@ def init_db():
                 lead_score INTEGER DEFAULT 0,
                 qualification TEXT DEFAULT 'Standard',
                 recommended_action TEXT
+            )
+        """)
+        execute(con, """
+            CREATE TABLE IF NOT EXISTS coverage_waitlist(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                service TEXT NOT NULL,
+                location TEXT,
+                zip TEXT,
+                name TEXT,
+                phone TEXT,
+                email TEXT,
+                issue TEXT,
+                status TEXT DEFAULT 'Waiting'
             )
         """)
         execute(con, "INSERT OR IGNORE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
@@ -1029,6 +1057,31 @@ def routing_diagnostics(service, location):
     return lines
 
 
+def save_coverage_waitlist(service, location, customer_zip, name, phone, email, issue):
+    """Save unmet marketplace demand so LeadPilot can notify the customer later."""
+    con = db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    execute(
+        con,
+        """INSERT INTO coverage_waitlist
+           (created_at,service,location,zip,name,phone,email,issue,status)
+           VALUES(?,?,?,?,?,?,?,?,?)""",
+        (
+            now,
+            (service or "General Repair").strip(),
+            (location or "").strip(),
+            (customer_zip or "").strip(),
+            (name or "").strip(),
+            (phone or "").strip(),
+            (email or "").strip(),
+            (issue or "").strip(),
+            "Waiting"
+        )
+    )
+    con.commit()
+    con.close()
+
+
 def marketplace_reply(message, context=None):
     """Business-neutral LeadPilot flow: problem -> location -> match -> contact info."""
     context = context or {}
@@ -1044,6 +1097,9 @@ def marketplace_reply(message, context=None):
     customer_email = (context.get("customer_email") or "").strip()
     customer_zip = (context.get("customer_zip") or "").strip()
     customer_location = (context.get("customer_location") or "").strip()
+    waitlist_name = (context.get("waitlist_name") or "").strip()
+    waitlist_phone = (context.get("waitlist_phone") or "").strip()
+    waitlist_email = (context.get("waitlist_email") or "").strip()
     matched_business_id = int(context.get("matched_business_id") or 0)
     matched_business_name = (context.get("business_name") or "").strip()
 
@@ -1054,6 +1110,179 @@ def marketplace_reply(message, context=None):
             matched_business_name = ""
             if customer_location and service and service != "General Repair":
                 step = "location"
+
+    # Coverage waitlist flow for areas with no current provider.
+    if step == "coverage_waitlist_offer":
+        # If the customer simply enters another valid Florida city/ZIP, treat it as
+        # a new location search rather than forcing them into the waitlist.
+        alternate = resolve_florida_location(msg)
+        if alternate and msg_lower not in ("yes", "yeah", "yep", "sure", "ok", "okay"):
+            matched, resolved = match_business_for_lead(service, msg)
+            customer_location = msg
+            customer_zip = (resolved or {}).get("postcode") or _extract_zip(msg)
+
+            if matched:
+                matched_business_id = int(matched["id"])
+                matched_business_name = matched["name"] or "a local provider"
+                place = (resolved or {}).get("display") or msg
+                return {
+                    "reply": f"I found {matched_business_name}, which covers {place} and offers {service}. What's your name?",
+                    "service": service, "urgency": urgency, "issue": issue,
+                    "intake_step": "name",
+                    "matched_business_id": matched_business_id,
+                    "business_name": matched_business_name,
+                    "customer_zip": customer_zip,
+                    "customer_location": customer_location
+                }
+
+            place = (resolved or {}).get("display") or msg
+            return {
+                "reply": (
+                    f"I still don't have a verified {service.lower()} provider serving {place}. "
+                    "I can notify you when coverage becomes available. If you'd like that, type YES."
+                ),
+                "service": service, "urgency": urgency, "issue": issue,
+                "intake_step": "coverage_waitlist_offer",
+                "matched_business_id": 0, "business_name": "",
+                "customer_zip": customer_zip,
+                "customer_location": customer_location
+            }
+
+        if msg_lower in ("no", "nope", "not now", "no thanks", "cancel"):
+            return {
+                "reply": "No problem. You can send another Florida city or ZIP code and I'll check that area.",
+                "service": service, "urgency": urgency, "issue": issue,
+                "intake_step": "location",
+                "matched_business_id": 0, "business_name": "",
+                "customer_zip": customer_zip,
+                "customer_location": customer_location
+            }
+
+        if msg_lower in ("yes", "yeah", "yep", "sure", "ok", "okay", "please", "yes please"):
+            return {
+                "reply": "Absolutely. What's your name?",
+                "service": service, "urgency": urgency, "issue": issue,
+                "intake_step": "waitlist_name",
+                "matched_business_id": 0, "business_name": "",
+                "customer_zip": customer_zip,
+                "customer_location": customer_location
+            }
+
+        # A natural name answer is also accepted.
+        parsed_name = _extract_name(msg)
+        if parsed_name:
+            waitlist_name = parsed_name
+            return {
+                "reply": f"Thanks, {waitlist_name}. What's the best 10-digit phone number to notify you?",
+                "service": service, "urgency": urgency, "issue": issue,
+                "intake_step": "waitlist_phone",
+                "waitlist_name": waitlist_name,
+                "matched_business_id": 0, "business_name": "",
+                "customer_zip": customer_zip,
+                "customer_location": customer_location
+            }
+
+        return {
+            "reply": "If you'd like LeadPilot to notify you when a provider becomes available, type YES. Otherwise, send another Florida city or ZIP code.",
+            "service": service, "urgency": urgency, "issue": issue,
+            "intake_step": "coverage_waitlist_offer",
+            "matched_business_id": 0, "business_name": "",
+            "customer_zip": customer_zip,
+            "customer_location": customer_location
+        }
+
+    if step == "waitlist_name":
+        parsed = _extract_name(msg)
+        if not parsed:
+            reply = "What name should I put on the coverage notification?"
+        else:
+            waitlist_name = parsed
+            step = "waitlist_phone"
+            reply = f"Thanks, {waitlist_name}. What's the best 10-digit phone number to notify you?"
+
+        return {
+            "reply": reply, "service": service, "urgency": urgency, "issue": issue,
+            "intake_step": step, "waitlist_name": waitlist_name,
+            "waitlist_phone": waitlist_phone, "waitlist_email": waitlist_email,
+            "matched_business_id": 0, "business_name": "",
+            "customer_zip": customer_zip, "customer_location": customer_location
+        }
+
+    if step == "waitlist_phone":
+        parsed = _extract_phone(msg)
+        if not parsed:
+            reply = "Please send a 10-digit phone number, or type SKIP if you'd rather use email only."
+        else:
+            waitlist_phone = parsed
+            step = "waitlist_email"
+            reply = "Got it. What's your email address? You can type SKIP if you only want a phone notification."
+
+        if msg_lower == "skip":
+            waitlist_phone = ""
+            step = "waitlist_email"
+            reply = "No problem. What's your email address?"
+
+        return {
+            "reply": reply, "service": service, "urgency": urgency, "issue": issue,
+            "intake_step": step, "waitlist_name": waitlist_name,
+            "waitlist_phone": waitlist_phone, "waitlist_email": waitlist_email,
+            "matched_business_id": 0, "business_name": "",
+            "customer_zip": customer_zip, "customer_location": customer_location
+        }
+
+    if step == "waitlist_email":
+        if msg_lower == "skip":
+            waitlist_email = ""
+        else:
+            parsed = _extract_email(msg)
+            if not parsed:
+                return {
+                    "reply": "That doesn't look like an email address. Try again, or type SKIP.",
+                    "service": service, "urgency": urgency, "issue": issue,
+                    "intake_step": "waitlist_email", "waitlist_name": waitlist_name,
+                    "waitlist_phone": waitlist_phone, "waitlist_email": waitlist_email,
+                    "matched_business_id": 0, "business_name": "",
+                    "customer_zip": customer_zip, "customer_location": customer_location
+                }
+            waitlist_email = parsed
+
+        if not waitlist_phone and not waitlist_email:
+            return {
+                "reply": "I need either a phone number or email so LeadPilot can notify you when coverage becomes available.",
+                "service": service, "urgency": urgency, "issue": issue,
+                "intake_step": "waitlist_phone", "waitlist_name": waitlist_name,
+                "waitlist_phone": "", "waitlist_email": "",
+                "matched_business_id": 0, "business_name": "",
+                "customer_zip": customer_zip, "customer_location": customer_location
+            }
+
+        save_coverage_waitlist(
+            service, customer_location, customer_zip,
+            waitlist_name, waitlist_phone, waitlist_email, issue
+        )
+
+        return {
+            "reply": (
+                f"You're on the list, {waitlist_name}. LeadPilot will use the contact information "
+                f"you provided to notify you when a verified {service.lower()} provider becomes "
+                "available for your area."
+            ),
+            "service": service, "urgency": urgency, "issue": issue,
+            "intake_step": "waitlist_complete", "waitlist_name": waitlist_name,
+            "waitlist_phone": waitlist_phone, "waitlist_email": waitlist_email,
+            "matched_business_id": 0, "business_name": "",
+            "customer_zip": customer_zip, "customer_location": customer_location,
+            "waitlist_saved": True
+        }
+
+    if step == "waitlist_complete":
+        return {
+            "reply": "Your coverage notification request is saved. You can also start a new search for another service or location.",
+            "service": service, "urgency": urgency, "issue": issue,
+            "intake_step": "waitlist_complete",
+            "matched_business_id": 0, "business_name": "",
+            "customer_zip": customer_zip, "customer_location": customer_location
+        }
 
     # Let the customer change service naturally at any point.
     switched_service, switched_urgency = classify(msg)
@@ -1082,11 +1311,15 @@ def marketplace_reply(message, context=None):
             if not matched:
                 place = (resolved or {}).get("display") or customer_location
                 return {
-                    "reply": f"I checked again for {service.lower()} in {place}, but I don't currently have a matching provider covering that area.",
+                    "reply": (
+                        f"I checked for {service.lower()} in {place}, but LeadPilot doesn't currently "
+                        "have a verified provider serving that area. I can notify you when coverage "
+                        "becomes available. Would you like me to save a coverage notification?"
+                    ),
                     "service": service,
                     "urgency": urgency,
                     "issue": issue or msg,
-                    "intake_step": "location",
+                    "intake_step": "coverage_waitlist_offer",
                     "matched_business_id": 0,
                     "business_name": "",
                     "customer_zip": (resolved or {}).get("postcode") or customer_zip,
@@ -1174,12 +1407,17 @@ def marketplace_reply(message, context=None):
         if not matched:
             place = resolved.get("display") or location
             return {
-                "reply": f"I recognize {place}, but I don't currently have a {service.lower()} provider covering that area. Try another nearby city or ZIP code, or check back as more businesses join LeadPilot.",
+                "reply": (
+                    f"I recognize {place}, but LeadPilot doesn't currently have a verified "
+                    f"{service.lower()} provider serving that area. I can notify you when coverage "
+                    "becomes available. Would you like me to save a coverage notification for you?"
+                ),
                 "service": service,
                 "urgency": urgency,
                 "issue": issue,
-                "intake_step": "location",
+                "intake_step": "coverage_waitlist_offer",
                 "matched_business_id": 0,
+                "business_name": "",
                 "customer_zip": resolved.get("postcode") or _extract_zip(location),
                 "customer_location": customer_location
             }
@@ -2014,6 +2252,9 @@ let chatContext = {
   matched_business_id: 0,
   business_name: "",
   customer_location: "",
+  waitlist_name: "",
+  waitlist_phone: "",
+  waitlist_email: "",
   marketplace_mode: __MARKETPLACE_MODE__,
   lead_submitted: false
 };
@@ -2060,6 +2301,9 @@ async function sendChat(){
  chatContext.matched_business_id=j.matched_business_id||chatContext.matched_business_id;
  chatContext.business_name=j.business_name||chatContext.business_name;
  if(j.customer_location!==undefined) chatContext.customer_location=j.customer_location;
+ if(j.waitlist_name!==undefined) chatContext.waitlist_name=j.waitlist_name;
+ if(j.waitlist_phone!==undefined) chatContext.waitlist_phone=j.waitlist_phone;
+ if(j.waitlist_email!==undefined) chatContext.waitlist_email=j.waitlist_email;
 
  document.getElementById('service').value=chatContext.service;
  document.getElementById('urgency').value=chatContext.urgency;
