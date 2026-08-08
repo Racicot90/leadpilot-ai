@@ -4,6 +4,8 @@ import json
 import sqlite3
 import hashlib
 import hmac
+import threading
+import time
 import html
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -131,6 +133,8 @@ def init_db():
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification TEXT DEFAULT 'Standard'")
         execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS recommended_action TEXT")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS chase_10_sent INTEGER DEFAULT 0")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS chase_30_sent INTEGER DEFAULT 0")
     else:
         for sql in [
             "ALTER TABLE businesses ADD COLUMN services TEXT DEFAULT ''",
@@ -645,6 +649,152 @@ def assistant_reply(message, context=None):
         "customer_email": "",
         "customer_zip": ""
     }
+
+
+def send_twilio_body(to_phone, body):
+    """Send a raw Twilio SMS body. Returns True on success."""
+    if not all([to_phone, TWILIO_PHONE_NUMBER, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
+        return False
+
+    endpoint = (
+        f"https://api.twilio.com/2010-04-01/Accounts/"
+        f"{TWILIO_ACCOUNT_SID}/Messages.json"
+    )
+
+    payload = urlencode({
+        "To": to_phone,
+        "From": TWILIO_PHONE_NUMBER,
+        "Body": body
+    }).encode()
+
+    import base64
+    token = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
+    ).decode()
+
+    req = Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {token}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    )
+
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return 200 <= getattr(resp, "status", 0) < 300
+    except Exception as e:
+        detail = ""
+        try:
+            if hasattr(e, "read"):
+                detail = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+        # Trial accounts may only allow predefined bodies.
+        if "572006" in detail:
+            try:
+                payload = urlencode({
+                    "To": to_phone,
+                    "From": TWILIO_PHONE_NUMBER,
+                    "Body": "sms_internal_alerts"
+                }).encode()
+                req = Request(
+                    endpoint,
+                    data=payload,
+                    method="POST",
+                    headers={
+                        "Authorization": f"Basic {token}",
+                        "Content-Type": "application/x-www-form-urlencoded"
+                    }
+                )
+                with urlopen(req, timeout=15) as resp:
+                    return 200 <= getattr(resp, "status", 0) < 300
+            except Exception as e2:
+                print("Twilio fallback chase error:", repr(e2), flush=True)
+                return False
+
+        print("Twilio chase error:", repr(e), detail[:600], flush=True)
+        return False
+
+
+def run_lead_chase_once():
+    """Send reminder alerts for overdue Hot leads that are still New."""
+    try:
+        business = get_business_settings()
+        alert_phone = (business.get("alert_phone") or NOTIFY_PHONE).strip()
+        if not alert_phone:
+            return
+
+        con = db()
+        rows = execute(
+            con,
+            """SELECT * FROM leads
+               WHERE business_id=? AND status='New'
+               ORDER BY id DESC""",
+            (BUSINESS_ID,)
+        ).fetchall()
+
+        for r in rows:
+            score = int(r["lead_score"] or 0)
+            quality = (r["qualification"] or "").strip()
+            if quality != "Hot" and score < 90:
+                continue
+
+            mins = lead_wait_minutes(r)
+            chase10 = int(r["chase_10_sent"] or 0)
+            chase30 = int(r["chase_30_sent"] or 0)
+
+            # 10-minute reminder.
+            if mins >= 10 and not chase10:
+                name = (r["name"] or "Customer").strip()
+                phone = (r["phone"] or "No phone").strip()
+                service = (r["service"] or "Service").strip()
+                body = (
+                    f"🔥 LeadPilot follow-up: {service} lead {name} "
+                    f"({phone}) has been waiting {mins} minutes. Contact now."
+                )
+                if send_twilio_body(alert_phone, body):
+                    execute(
+                        con,
+                        "UPDATE leads SET chase_10_sent=1 WHERE id=? AND business_id=?",
+                        (r["id"], BUSINESS_ID)
+                    )
+                    con.commit()
+                    chase10 = 1
+                    print("Lead chase 10-min sent:", r["id"], flush=True)
+
+            # 30-minute escalation.
+            if mins >= 30 and not chase30:
+                name = (r["name"] or "Customer").strip()
+                phone = (r["phone"] or "No phone").strip()
+                service = (r["service"] or "Service").strip()
+                body = (
+                    f"🚨 URGENT LeadPilot: Hot {service} lead {name} "
+                    f"({phone}) is still New after {mins} minutes."
+                )
+                if send_twilio_body(alert_phone, body):
+                    execute(
+                        con,
+                        "UPDATE leads SET chase_30_sent=1 WHERE id=? AND business_id=?",
+                        (r["id"], BUSINESS_ID)
+                    )
+                    con.commit()
+                    print("Lead chase 30-min sent:", r["id"], flush=True)
+
+        con.close()
+
+    except Exception as e:
+        print("Lead chase worker error:", repr(e), flush=True)
+
+
+def lead_chase_worker():
+    """Background MVP worker. Checks about once per minute while the web service is awake."""
+    while True:
+        run_lead_chase_once()
+        time.sleep(60)
 
 
 def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification):
@@ -1755,6 +1905,10 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+
+# Start automatic lead-chasing reminders.
+if os.environ.get("LEAD_CHASE_WORKER", "1") == "1":
+    threading.Thread(target=lead_chase_worker, daemon=True).start()
 
     print(
         "LeadPilot AI running on "
