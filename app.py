@@ -344,6 +344,17 @@ def business_is_marketplace_eligible(business):
     return effective_verification_status(business) == "Verified"
 
 
+def business_can_receive_leads(business):
+    """Universal lead gate for marketplace, dedicated pages, chat, and direct API."""
+    if not business:
+        return False
+    if int(business.get("routing_enabled") or 0) != 1:
+        return False
+    if int(business.get("test_business") or 0) == 1:
+        return True
+    return effective_verification_status(business) == "Verified"
+
+
 def settings_html(saved=False, business_id=BUSINESS_ID):
     s = get_business_settings(business_id)
     esc = html.escape
@@ -511,7 +522,7 @@ def businesses_html(created_id=None):
         <div class="biz">
           <div><strong>{html.escape(r['name'] or 'Unnamed business')}</strong>
           <span>{html.escape(r['service_area'] or 'No service area yet')}</span>
-          <span>{"Accepting leads" if r["routing_enabled"] else "Routing paused"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span>
+          <span>{"Accepting leads" if business_can_receive_leads(dict(r)) else "Lead routing blocked"} · Priority {int(r["routing_priority"] or 0)} · Daily cap {"Unlimited" if int(r["daily_lead_cap"] or 0) == 0 else int(r["daily_lead_cap"])}</span>
           <span>Routing health {metrics["health"]}/100 · Leads today {metrics["today_count"]} · Open New {metrics["new_count"]}</span>
           <span>{"🧪 Test Business" if r["test_business"] else ("🛡️ LeadPilot Verified" if effective_verification_status(dict(r))=="Verified" else "Verification: "+effective_verification_status(dict(r)))}</span></div>
           <div class="bizlinks">
@@ -882,7 +893,7 @@ def match_business_for_lead(service, location, reserve=True):
     for b in businesses:
         if int(b["routing_enabled"] if b["routing_enabled"] is not None else 1) != 1:
             continue
-        if not business_is_marketplace_eligible(dict(b)):
+        if not business_can_receive_leads(dict(b)):
             continue
         if not business_supports_service(b, service):
             continue
@@ -974,9 +985,9 @@ def routing_diagnostics(service, location):
             eligible = False
             reasons.append("paused")
 
-        if not business_is_marketplace_eligible(dict(b)):
+        if not business_can_receive_leads(dict(b)):
             eligible = False
-            reasons.append("not verified")
+            reasons.append("ineligible: verification/routing")
 
         if not business_supports_service(b, service):
             eligible = False
@@ -1035,6 +1046,14 @@ def marketplace_reply(message, context=None):
     customer_location = (context.get("customer_location") or "").strip()
     matched_business_id = int(context.get("matched_business_id") or 0)
     matched_business_name = (context.get("business_name") or "").strip()
+
+    if matched_business_id:
+        current_business = get_business_settings(matched_business_id)
+        if not business_can_receive_leads(current_business):
+            matched_business_id = 0
+            matched_business_name = ""
+            if customer_location and service and service != "General Repair":
+                step = "location"
 
     # Let the customer change service naturally at any point.
     switched_service, switched_urgency = classify(msg)
@@ -1397,6 +1416,21 @@ def _extract_name(value):
 def assistant_reply(message, context=None, business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
     context = context or {}
+
+    if not business_can_receive_leads(business):
+        return {
+            "reply": "This provider is not currently eligible to receive new LeadPilot requests. Please return to LeadPilot to find another available provider.",
+            "service": context.get("service", ""),
+            "urgency": context.get("urgency", "Normal"),
+            "issue": context.get("issue", ""),
+            "intake_step": "blocked",
+            "customer_name": "",
+            "customer_phone": "",
+            "customer_email": "",
+            "customer_zip": "",
+            "matched_business_id": 0,
+            "business_name": ""
+        }
 
     business_name = business.get("name") or BUSINESS_NAME
     services_raw = business.get("services") or ""
@@ -2207,6 +2241,30 @@ button{width:100%;padding:13px;border:0;border-radius:10px;background:#172033;co
 def customer_page_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
     business_name = business.get("name") or BUSINESS_NAME
+
+    if not business_can_receive_leads(business):
+        status = effective_verification_status(business)
+        return f"""<!doctype html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(business_name)} — LeadPilot</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:720px;margin:auto;padding:22px}}
+.card{{background:#fff;border-radius:18px;padding:22px;box-shadow:0 6px 20px rgba(0,0,0,.06);margin-top:40px}}
+.status{{display:inline-block;margin-top:8px;padding:8px 12px;border-radius:999px;background:#fff0c2;color:#93370d;font-weight:800}}
+p{{color:#667085;line-height:1.5}}
+a{{display:inline-block;margin-top:14px;color:#3448c5;font-weight:800;text-decoration:none}}
+</style></head>
+<body><div class="wrap"><div class="card">
+<h1>{html.escape(business_name)}</h1>
+<div class="status">{html.escape(status)}</div>
+<p>This provider is not currently eligible to receive new LeadPilot requests.</p>
+<p>Please return to LeadPilot to find another available provider for your service and location.</p>
+<a href="/">Find another provider</a>
+</div></div></body></html>"""
+
     page = INDEX
     page = page.replace("LeadPilot Demo Services", html.escape(business_name))
     page = page.replace(
@@ -2905,6 +2963,18 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_bytes(
                         json.dumps({"error":"no matching business selected"}).encode(),
                         400,
+                        "application/json"
+                    )
+                    return
+
+                selected_business = get_business_settings(business_id)
+                if not business_can_receive_leads(selected_business):
+                    self.send_bytes(
+                        json.dumps({
+                            "error":"business is not currently eligible to receive leads",
+                            "verification_status": effective_verification_status(selected_business)
+                        }).encode(),
+                        403,
                         "application/json"
                     )
                     return
