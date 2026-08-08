@@ -648,7 +648,7 @@ def assistant_reply(message, context=None):
 
 
 def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification):
-    """Send a detailed SMS alert for Hot leads. Failures never block lead creation."""
+    """Send a Hot-lead SMS. On Twilio trial error 572006, fall back to a permitted trial template."""
     if qualification.get("qualification") != "Hot":
         return False
 
@@ -678,7 +678,7 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
     if len(issue) > 180:
         issue = issue[:177] + "..."
 
-    body = (
+    detailed_body = (
         f"🔥 HOT LEAD — {score}/100\n"
         f"{service_name} · {urgency_name} urgency\n"
         f"Customer: {customer_name}\n"
@@ -692,36 +692,36 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
         f"{TWILIO_ACCOUNT_SID}/Messages.json"
     )
 
-    payload = urlencode({
-        "To": alert_phone,
-        "From": TWILIO_PHONE_NUMBER,
-        "Body": body
-    }).encode()
-
     import base64
     token = base64.b64encode(
         f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
     ).decode()
 
-    req = Request(
-        endpoint,
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Basic {token}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-    )
+    def twilio_send(body):
+        payload = urlencode({
+            "To": alert_phone,
+            "From": TWILIO_PHONE_NUMBER,
+            "Body": body
+        }).encode()
+
+        req = Request(
+            endpoint,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Basic {token}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+        )
+
+        with urlopen(req, timeout=15) as resp:
+            return 200 <= getattr(resp, "status", 0) < 300
 
     try:
-        with urlopen(req, timeout=15) as resp:
-            ok = 200 <= getattr(resp, "status", 0) < 300
-            print(
-                "Twilio hot-lead SMS:",
-                "sent" if ok else f"status {getattr(resp, 'status', '?')}",
-                flush=True
-            )
-            return ok
+        ok = twilio_send(detailed_body)
+        print("Twilio hot-lead SMS:", "sent" if ok else "failed", flush=True)
+        return ok
+
     except Exception as e:
         detail = ""
         try:
@@ -729,6 +729,40 @@ def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualifica
                 detail = e.read().decode("utf-8", errors="replace")
         except Exception:
             detail = ""
+
+        # Twilio trial accounts reject custom bodies with error 572006.
+        if "572006" in detail:
+            print(
+                "Twilio trial restriction detected; sending permitted fallback template.",
+                flush=True
+            )
+            try:
+                ok = twilio_send("sms_internal_alerts")
+                print(
+                    "Twilio fallback SMS:",
+                    "sent" if ok else "failed",
+                    flush=True
+                )
+                return ok
+            except Exception as fallback_error:
+                fallback_detail = ""
+                try:
+                    if hasattr(fallback_error, "read"):
+                        fallback_detail = fallback_error.read().decode(
+                            "utf-8",
+                            errors="replace"
+                        )
+                except Exception:
+                    fallback_detail = ""
+
+                print(
+                    "Twilio fallback SMS error:",
+                    repr(fallback_error),
+                    fallback_detail[:1000],
+                    flush=True
+                )
+                return False
+
         print("Twilio SMS error:", repr(e), detail[:1000], flush=True)
         return False
 
