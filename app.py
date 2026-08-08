@@ -572,8 +572,77 @@ def marketplace_reply(message, context=None):
     customer_phone = (context.get("customer_phone") or "").strip()
     customer_email = (context.get("customer_email") or "").strip()
     customer_zip = (context.get("customer_zip") or "").strip()
+    customer_location = (context.get("customer_location") or "").strip()
     matched_business_id = int(context.get("matched_business_id") or 0)
     matched_business_name = (context.get("business_name") or "").strip()
+
+    # Let the customer change service naturally at any point.
+    switched_service, switched_urgency = classify(msg)
+    service_words = {
+        "HVAC": ["hvac", "ac", "a/c", "air conditioning", "heat", "furnace"],
+        "Plumbing": ["plumber", "plumbing", "pipe", "toilet", "sink", "drain", "water leak"],
+        "Electrical": ["electrician", "electrical", "electric", "outlet", "breaker", "wiring", "power"],
+        "Roofing": ["roofer", "roofing", "roof", "shingle"]
+    }
+
+    explicit_service_change = False
+    for candidate, words in service_words.items():
+        if candidate != service and any(word in msg_lower for word in words):
+            switched_service = candidate
+            explicit_service_change = True
+            break
+
+    if explicit_service_change and service:
+        service = switched_service
+        urgency = switched_urgency if switched_urgency != "Normal" else urgency
+
+        # If we already know the customer's location, re-run matching immediately.
+        if customer_location:
+            matched, resolved = match_business_for_lead(service, customer_location)
+
+            if not matched:
+                place = (resolved or {}).get("display") or customer_location
+                return {
+                    "reply": f"I checked again for {service.lower()} in {place}, but I don't currently have a matching provider covering that area.",
+                    "service": service,
+                    "urgency": urgency,
+                    "issue": issue or msg,
+                    "intake_step": "location",
+                    "matched_business_id": 0,
+                    "business_name": "",
+                    "customer_zip": (resolved or {}).get("postcode") or customer_zip,
+                    "customer_location": customer_location
+                }
+
+            matched_business_id = int(matched["id"])
+            matched_business_name = matched["name"] or "a local provider"
+            place = (resolved or {}).get("display") or customer_location
+            customer_zip = (resolved or {}).get("postcode") or customer_zip
+
+            return {
+                "reply": f"Yes — I found {matched_business_name}, which covers {place} and offers {service}. What's your name?",
+                "service": service,
+                "urgency": urgency,
+                "issue": issue or msg,
+                "intake_step": "name",
+                "matched_business_id": matched_business_id,
+                "business_name": matched_business_name,
+                "customer_zip": customer_zip,
+                "customer_location": customer_location
+            }
+
+        # If location is not known yet, ask for it for the new service.
+        return {
+            "reply": f"Sure — I'll switch this to {service}. What Florida city or ZIP code is the job in?",
+            "service": service,
+            "urgency": urgency,
+            "issue": issue or msg,
+            "intake_step": "location",
+            "matched_business_id": 0,
+            "business_name": "",
+            "customer_zip": customer_zip,
+            "customer_location": ""
+        }
 
     # Marketplace rule: never collect a name until a business has been matched.
     # This also repairs stale browser chat state from older deployments.
@@ -602,11 +671,13 @@ def marketplace_reply(message, context=None):
             "issue": issue,
             "intake_step": "location",
             "matched_business_id": 0,
-            "business_name": ""
+            "business_name": "",
+            "customer_location": ""
         }
 
     if step == "location":
         location = msg
+        customer_location = location
         matched, resolved = match_business_for_lead(service, location)
 
         if not resolved:
@@ -617,7 +688,8 @@ def marketplace_reply(message, context=None):
                 "issue": issue,
                 "intake_step": "location",
                 "matched_business_id": 0,
-                "customer_zip": ""
+                "customer_zip": "",
+                "customer_location": customer_location
             }
 
         if not matched:
@@ -629,7 +701,8 @@ def marketplace_reply(message, context=None):
                 "issue": issue,
                 "intake_step": "location",
                 "matched_business_id": 0,
-                "customer_zip": resolved.get("postcode") or _extract_zip(location)
+                "customer_zip": resolved.get("postcode") or _extract_zip(location),
+                "customer_location": customer_location
             }
 
         matched_business_id = int(matched["id"])
@@ -645,7 +718,8 @@ def marketplace_reply(message, context=None):
             "intake_step": "name",
             "matched_business_id": matched_business_id,
             "business_name": matched_business_name,
-            "customer_zip": customer_zip
+            "customer_zip": customer_zip,
+            "customer_location": customer_location
         }
 
     if step == "name":
@@ -693,7 +767,8 @@ def marketplace_reply(message, context=None):
         "customer_email": customer_email,
         "customer_zip": customer_zip,
         "matched_business_id": matched_business_id,
-        "business_name": matched_business_name
+        "business_name": matched_business_name,
+        "customer_location": customer_location
     }
 
 
@@ -1454,6 +1529,7 @@ let chatContext = {
   customer_zip: "",
   matched_business_id: 0,
   business_name: "",
+  customer_location: "",
   marketplace_mode: __MARKETPLACE_MODE__
 };
 
@@ -1499,6 +1575,7 @@ async function sendChat(){
  chatContext.customer_zip=j.customer_zip||chatContext.customer_zip;
  chatContext.matched_business_id=j.matched_business_id||chatContext.matched_business_id;
  chatContext.business_name=j.business_name||chatContext.business_name;
+ if(j.customer_location!==undefined) chatContext.customer_location=j.customer_location;
 
  document.getElementById('service').value=chatContext.service;
  document.getElementById('urgency').value=chatContext.urgency;
