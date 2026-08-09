@@ -2365,7 +2365,7 @@ def marketplace_reply(message, context=None):
 
     # Marketplace rule: never collect a name until a business has been matched.
     # This also repairs stale browser chat state from older deployments.
-    if not matched_business_id and step in ("name", "phone", "email", "ready"):
+    if not matched_business_id and step in ("name", "phone", "email", "details", "ready"):
         step = "location" if service and service != "General Repair" else ""
 
     if not step:
@@ -2467,16 +2467,38 @@ def marketplace_reply(message, context=None):
     elif step == "email":
         if msg_lower == "skip":
             customer_email = ""
-            step = "details"
-            reply = "No problem. Briefly describe what you need fixed or done."
+            if issue and len(issue.strip()) >= 8:
+                final_service, final_urgency = classify(issue)
+                if final_service != "General Repair":
+                    service = final_service
+                urgency = final_urgency
+                step = "ready"
+                reply = (
+                    f"Perfect. Your {service.lower()} request is ready for "
+                    f"{matched_business_name}. Review the details below and tap Send My Request."
+                )
+            else:
+                step = "details"
+                reply = "No problem. Briefly describe what you need fixed or done."
         else:
             parsed = _extract_email(msg)
             if not parsed:
                 reply = "That doesn't look like an email address. Try again, or type SKIP."
             else:
                 customer_email = parsed
-                step = "details"
-                reply = "Thanks. Briefly describe what you need fixed or done."
+                if issue and len(issue.strip()) >= 8:
+                    final_service, final_urgency = classify(issue)
+                    if final_service != "General Repair":
+                        service = final_service
+                    urgency = final_urgency
+                    step = "ready"
+                    reply = (
+                        f"Perfect. Your {service.lower()} request is ready for "
+                        f"{matched_business_name}. Review the details below and tap Send My Request."
+                    )
+                else:
+                    step = "details"
+                    reply = "Thanks. Briefly describe what you need fixed or done."
 
     elif step == "details":
         issue = msg
@@ -2495,11 +2517,14 @@ def marketplace_reply(message, context=None):
         # Always refresh urgency from the actual job description.
         urgency = final_urgency
 
-        step = "submitted"
+        step = "ready"
         reply = (
-            f"Got it. I'm sending your {service.lower()} request to "
-            f"{matched_business_name} now."
+            f"Got it. Your {service.lower()} request is ready for "
+            f"{matched_business_name}. Review the details below and tap Send My Request."
         )
+
+    elif step == "ready":
+        reply = f"Your request is ready to send to {matched_business_name}."
 
     elif step == "submitted":
         reply = f"Your request has already been sent to {matched_business_name}."
@@ -2521,7 +2546,7 @@ def marketplace_reply(message, context=None):
         "matched_business_id": matched_business_id,
         "business_name": matched_business_name,
         "customer_location": customer_location,
-        "submit_ready": step == "submitted"
+        "submit_ready": step == "ready"
     }
 
 
@@ -2966,7 +2991,7 @@ def assistant_reply(message, context=None, business_id=BUSINESS_ID):
             intake_step = "ready"
             reply = (
                 f"Perfect. Your {service.lower()} request is ready for {business_name}. "
-                "Your information is filled into the request form below. Tap Submit Request to send it."
+                "Review the details below and tap Send My Request."
             )
         else:
             parsed = _extract_email(msg)
@@ -3648,6 +3673,15 @@ button{
 .contact-block{margin-top:18px;padding-top:18px;border-top:1px solid #eef1f5}
 .contact-block h3{margin-bottom:5px}
 .contact-grid{display:grid;gap:8px;margin-top:12px}
+.contact-review{
+  margin-top:13px;padding:14px;border:1px solid #e2e8f0;border-radius:14px;
+  background:#f8fafc;align-items:center;justify-content:space-between;gap:12px
+}
+.contact-review span{display:block;color:#667085;font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:800}
+.contact-review strong{display:block;font-size:17px;margin-top:4px}
+.contact-review small{display:block;color:#667085;margin-top:3px}
+.edit-contact{background:#fff;color:#172033;border:1px solid #d0d5dd;padding:9px 12px;white-space:nowrap}
+.ready-note{color:#067647;font-weight:700;margin-top:7px;font-size:13px}
 .field-label{font-size:12px;font-weight:800;color:#344054;margin:5px 0 0}
 .optional{font-weight:400;color:var(--muted)}
 .primary-submit{
@@ -3766,11 +3800,21 @@ button{
     </div>
   </div>
 
-  <div class="contact-block">
+  <div id="contactBlock" class="contact-block">
     <h3>How should the business reach you?</h3>
-    <div class="muted">We won't ask you to re-enter anything LeadPilot already collected.</div>
+    <div id="contactHelp" class="muted">LeadPilot will fill this in as you answer the assistant.</div>
 
-    <div class="contact-grid">
+    <div id="contactReview" class="contact-review" style="display:none">
+      <div>
+        <span>Contact</span>
+        <strong id="contactReviewName"></strong>
+        <small id="contactReviewPhone"></small>
+        <small id="contactReviewEmail"></small>
+      </div>
+      <button type="button" class="edit-contact" onclick="editContact()">Edit</button>
+    </div>
+
+    <div id="contactFields" class="contact-grid">
       <div class="field-label">Name</div>
       <input id="name" autocomplete="name" placeholder="Your name">
 
@@ -3788,6 +3832,26 @@ button{
 
     <button id="submitButton" class="primary-submit" onclick="submitLead()">SEND MY REQUEST →</button>
     <p id="result" class="result"></p>
+  </div>
+</div>
+
+<div id="waitlistConfirmation" class="card confirmation">
+  <div class="success-icon">✓</div>
+  <div class="eyebrow" style="color:#067647">Coverage notification saved</div>
+  <h2 id="waitlistTitle">You're on the list.</h2>
+  <p id="waitlistText" class="muted"></p>
+
+  <div class="confirm-summary">
+    <div class="confirm-row"><span>Service</span><strong id="waitlistService"></strong></div>
+    <div class="confirm-row"><span>Area</span><strong id="waitlistLocation"></strong></div>
+    <div class="confirm-row"><span>Contact</span><strong id="waitlistContact"></strong></div>
+  </div>
+
+  <div class="next-box">
+    <h3>What happens next?</h3>
+    <div class="next-step"><div class="step-num">1</div><div>LeadPilot keeps your coverage request saved.</div></div>
+    <div class="next-step"><div class="step-num">2</div><div>When a verified provider becomes available for this service area, LeadPilot can notify you using the contact information you provided.</div></div>
+    <div class="next-step"><div class="step-num">3</div><div>You can return anytime to start a request for another service or location.</div></div>
   </div>
 </div>
 
@@ -3835,7 +3899,8 @@ let chatContext = {
   waitlist_phone: "",
   waitlist_email: "",
   marketplace_mode: __MARKETPLACE_MODE__,
-  lead_submitted: false
+  lead_submitted: false,
+  waitlist_saved: false
 };
 
 const configuredBusinessName = '__BUSINESS_NAME__';
@@ -3883,6 +3948,66 @@ function refreshBusinessBanner(){
  }
 }
 
+function contactIsComplete(){
+ return !!((chatContext.customer_name||chatContext.waitlist_name) &&
+           (chatContext.customer_phone||chatContext.waitlist_phone||chatContext.customer_email||chatContext.waitlist_email));
+}
+
+function editContact(){
+ document.getElementById('contactReview').style.display='none';
+ document.getElementById('contactFields').style.display='grid';
+ document.getElementById('contactHelp').textContent='Update anything that needs correcting before you send the request.';
+}
+
+function refreshContactReview(){
+ const name=chatContext.customer_name||chatContext.waitlist_name||'';
+ const phone=chatContext.customer_phone||chatContext.waitlist_phone||'';
+ const email=chatContext.customer_email||chatContext.waitlist_email||'';
+
+ const ready=!!(name && (phone||email));
+ const review=document.getElementById('contactReview');
+ const fields=document.getElementById('contactFields');
+ const help=document.getElementById('contactHelp');
+
+ if(ready){
+   document.getElementById('name').value=name;
+   document.getElementById('phone').value=phone;
+   document.getElementById('email').value=email;
+
+   setText('contactReviewName',name);
+   setText('contactReviewPhone',phone);
+   setText('contactReviewEmail',email);
+
+   document.getElementById('contactReviewPhone').style.display=phone?'block':'none';
+   document.getElementById('contactReviewEmail').style.display=email?'block':'none';
+
+   review.style.display='flex';
+   fields.style.display='none';
+   help.innerHTML='<span class="ready-note">✓ Contact information collected by LeadPilot.</span>';
+ }else{
+   review.style.display='none';
+   fields.style.display='grid';
+   help.textContent='LeadPilot will fill this in as you answer the assistant.';
+ }
+}
+
+function showWaitlistConfirmation(){
+ const name=chatContext.waitlist_name||'there';
+ const firstName=(name||'').trim().split(/\s+/)[0]||'there';
+ const contact=chatContext.waitlist_phone||chatContext.waitlist_email||'Saved';
+
+ setText('waitlistTitle',`You're on the list, ${firstName}.`);
+ setText('waitlistText',`LeadPilot saved your request and will use the contact information you provided when verified ${String(chatContext.service||'service').toLowerCase()} coverage becomes available in your area.`);
+ setText('waitlistService',chatContext.service||'Service request');
+ setText('waitlistLocation',chatContext.customer_location||chatContext.customer_zip||'Your area');
+ setText('waitlistContact',contact);
+
+ document.getElementById('assistantCard').style.display='none';
+ document.getElementById('summaryCard').style.display='none';
+ document.getElementById('waitlistConfirmation').classList.add('visible');
+ window.scrollTo({top:0,behavior:'smooth'});
+}
+
 function refreshSummary(){
  const location=chatContext.customer_zip||chatContext.customer_location||'';
 
@@ -3908,7 +4033,20 @@ function refreshSummary(){
  document.getElementById('urgency').value=chatContext.urgency||'';
  document.getElementById('details').value=chatContext.issue||'';
 
+ refreshContactReview();
+
+ const submitButton=document.getElementById('submitButton');
+ const readyToSend = chatContext.intake_step==='ready' && !!chatContext.matched_business_id;
+ if(submitButton){
+   submitButton.style.display=readyToSend?'block':'none';
+ }
+ const contactBlock=document.getElementById('contactBlock');
+ if(contactBlock){
+   contactBlock.style.display=(chatContext.matched_business_id || !chatContext.marketplace_mode)?'block':'none';
+ }
+
  refreshBusinessBanner();
+refreshSummary();
 }
 
 async function sendChat(){
@@ -3947,11 +4085,13 @@ async function sendChat(){
  if(j.waitlist_name!==undefined) chatContext.waitlist_name=j.waitlist_name;
  if(j.waitlist_phone!==undefined) chatContext.waitlist_phone=j.waitlist_phone;
  if(j.waitlist_email!==undefined) chatContext.waitlist_email=j.waitlist_email;
+ if(j.waitlist_saved!==undefined) chatContext.waitlist_saved=!!j.waitlist_saved;
 
  refreshSummary();
 
- if(j.submit_ready && chatContext.marketplace_mode && !chatContext.lead_submitted){
-   await submitLead(true);
+ if(chatContext.waitlist_saved || chatContext.intake_step==='waitlist_complete'){
+   showWaitlistConfirmation();
+   return;
  }
 }
 
@@ -3960,9 +4100,9 @@ async function submitLead(auto=false){
 
  const data={
    business_id:chatContext.matched_business_id||__BUSINESS_ID__,
-   name:document.getElementById('name').value.trim(),
-   phone:document.getElementById('phone').value.trim(),
-   email:document.getElementById('email').value.trim(),
+   name:(document.getElementById('name').value||chatContext.customer_name||chatContext.waitlist_name||'').trim(),
+   phone:(document.getElementById('phone').value||chatContext.customer_phone||chatContext.waitlist_phone||'').trim(),
+   email:(document.getElementById('email').value||chatContext.customer_email||chatContext.waitlist_email||'').trim(),
    zip:document.getElementById('zip').value.trim(),
    service:document.getElementById('service').value||'General Repair',
    urgency:document.getElementById('urgency').value||'Normal',
