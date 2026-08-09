@@ -1425,7 +1425,7 @@ small{{color:#667085;display:block;margin-top:5px}}
 <a href="/logout">Log out</a>
 </div>
 <h1>SMS Status</h1>
-<p>Beta-safe delivery log. SMS failures do not block lead creation or routing.</p>
+<p>Beta-safe delivery log. Failed messages now show Twilio's actual error code and message when available.</p>
 <div class="stats">
 <div class="stat">Sent<strong>{sent}</strong></div>
 <div class="stat">Failed<strong>{failed}</strong></div>
@@ -2872,6 +2872,8 @@ def send_twilio_body(to_phone, body, return_error=False):
 
         import urllib.parse
         import urllib.request
+        import urllib.error
+        import json
         import base64
 
         url = (
@@ -2903,9 +2905,45 @@ def send_twilio_body(to_phone, body, return_error=False):
 
         return (True, "") if return_error else True
 
+    except urllib.error.HTTPError as e:
+        raw_body = ""
+        try:
+            raw_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw_body = ""
+
+        twilio_code = ""
+        twilio_message = ""
+        more_info = ""
+
+        if raw_body:
+            try:
+                payload = json.loads(raw_body)
+                twilio_code = str(payload.get("code", "") or "")
+                twilio_message = str(payload.get("message", "") or "")
+                more_info = str(payload.get("more_info", "") or "")
+            except Exception:
+                pass
+
+        parts = [f"HTTP {e.code} {e.reason}"]
+        if twilio_code:
+            parts.append(f"Twilio code {twilio_code}")
+        if twilio_message:
+            parts.append(twilio_message)
+        elif raw_body:
+            parts.append(raw_body[:700])
+
+        err = " | ".join(parts)
+
+        print("Twilio send failed:", err, flush=True)
+        if more_info:
+            print("Twilio more info:", more_info, flush=True)
+
+        return (False, err) if return_error else False
+
     except Exception as e:
-        err = str(e)
-        print("Twilio send failed:", repr(e), flush=True)
+        err = f"{type(e).__name__}: {e}"
+        print("Twilio send failed:", err, flush=True)
         return (False, err) if return_error else False
 
 
