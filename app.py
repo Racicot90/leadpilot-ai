@@ -702,6 +702,64 @@ button{{margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;back
 .biz{{display:flex;justify-content:space-between;gap:14px;align-items:center}} .biz span{{display:block;color:#667085;font-size:13px;margin-top:4px}}
 .bizlinks{{display:flex;gap:10px;flex-wrap:wrap}} a{{color:#3448c5;font-weight:700;text-decoration:none}} .success{{background:#dcfae6;color:#05603a;padding:12px;border-radius:10px;margin-bottom:12px}}
 @media(max-width:650px){{.biz{{display:block}} .bizlinks{{margin-top:12px}}}}
+
+/* V13 visual polish - cosmetic only */
+html{{scroll-behavior:smooth}}
+body{{background:radial-gradient(circle at top right,rgba(52,72,197,.07),transparent 28%),linear-gradient(180deg,#f8faff 0,#f3f6fa 380px,#f4f7fb 100%)}}
+.wrap{{max-width:1040px;padding:22px 18px 40px}}
+header{{background:rgba(255,255,255,.92);border:1px solid #e2e8f0;border-radius:18px;padding:16px 18px;box-shadow:0 8px 30px rgba(20,32,51,.07)}}
+header h1{{font-size:28px;letter-spacing:-.035em}}
+header h1:before{{content:"LP";display:inline-grid;place-items:center;width:38px;height:38px;margin-right:10px;border-radius:11px;background:linear-gradient(145deg,#172033,#3448c5);color:#fff;font-size:13px;vertical-align:4px;box-shadow:0 7px 16px rgba(52,72,197,.25)}}
+.sub{{font-size:13px;margin-left:52px}}
+.toplinks{{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}}
+.toplinks a{{margin:0;padding:8px 10px;border-radius:9px;color:#475467}}
+.toplinks a:hover{{background:#f2f4f7;color:#172033}}
+.priority-card{{position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.08);background:radial-gradient(circle at 92% 0,rgba(78,97,180,.35),transparent 32%),linear-gradient(135deg,#101827 0%,#1c2941 58%,#243453 100%);box-shadow:0 18px 42px rgba(20,32,51,.18)}}
+.priority-card:after{{content:"";position:absolute;width:180px;height:180px;right:-75px;bottom:-100px;border-radius:50%;border:28px solid rgba(255,255,255,.035);pointer-events:none}}
+.priority-kicker{{display:inline-block;padding:6px 9px;border-radius:999px;background:rgba(255,214,107,.10);border:1px solid rgba(255,214,107,.18)}}
+.priority-name{{letter-spacing:-.03em}}
+.priority-value strong{{color:#fff}}
+.priority-facts div{{border:1px solid rgba(255,255,255,.06)}}
+.priority-call,.priority-contact,.priority-status-btn{{transition:transform .15s ease,background .15s ease}}
+.priority-call:active,.priority-contact:active,.priority-status-btn:active{{transform:scale(.98)}}
+.money-grid{{gap:12px}}
+.money-card{{border:1px solid #e2e8f0;box-shadow:0 8px 24px rgba(20,32,51,.065)}}
+.money-card strong{{letter-spacing:-.035em}}
+.money-card.risk{{border-top:3px solid #f79009;background:linear-gradient(180deg,#fff8f1,#fff4ed)}}
+.money-card.risk strong{{color:#b54708}}
+.money-card:first-child{{background:linear-gradient(145deg,#172033,#22314d);border-color:#263754}}
+.stat{{border:1px solid #e6eaf0;box-shadow:0 5px 18px rgba(20,32,51,.045)}}
+.attention{{border:1px solid #e6eaf0;box-shadow:0 10px 30px rgba(20,32,51,.07)}}
+.attention-title h2:before{{content:"!";display:inline-grid;place-items:center;width:26px;height:26px;margin-right:7px;border-radius:8px;background:#fff1f0;color:#d92d20;font-size:15px;vertical-align:2px}}
+.folder{{cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}}
+.folder:hover{{transform:translateY(-1px);box-shadow:0 7px 18px rgba(20,32,51,.08)}}
+.folder.active{{background:linear-gradient(145deg,#172033,#273752);box-shadow:0 8px 18px rgba(20,32,51,.16)}}
+.folder[data-folder="Estimate"] b{{color:#b54708}}
+.folder[data-folder="Won"] b{{color:#067647}}
+.folder[data-folder="Lost"] b{{color:#b42318}}
+.folder.active b{{color:#fff}}
+.folder-heading{{background:rgba(255,255,255,.62);border:1px solid #e6eaf0;border-radius:12px;padding:10px 12px}}
+.lead-card{{border:1px solid #e6eaf0;box-shadow:0 8px 26px rgba(20,32,51,.065);transition:transform .16s ease,box-shadow .16s ease}}
+.lead-card:hover{{transform:translateY(-2px);box-shadow:0 12px 32px rgba(20,32,51,.095)}}
+.opportunity{{background:linear-gradient(180deg,#f2fdf6,#ecfdf3);border-color:#c8f1d8}}
+.message{{background:#f8fafc;border-left-color:#3448c5}}
+.ai-box{{background:linear-gradient(180deg,#f2f6ff,#eef4ff);border-color:#d8e2ff}}
+.action,.status-btn,.won-input button{{cursor:pointer;transition:transform .15s ease}}
+.action:active,.status-btn:active,.won-input button:active{{transform:scale(.98)}}
+@media(max-width:700px){{
+.wrap{{padding:10px 10px 32px}}
+header{{padding:14px;margin-bottom:14px}}
+header h1{{font-size:24px}}
+header h1:before{{width:34px;height:34px}}
+.sub{{margin-left:46px}}
+.toplinks{{justify-content:flex-start;margin-top:12px}}
+.toplinks a{{font-size:12px;background:#f7f8fa}}
+.priority-card{{padding:17px;border-radius:18px}}
+.money-card{{padding:17px}}
+.attention{{padding:15px}}
+.lead-card{{padding:16px}}
+}}
+
 </style></head><body><div class="wrap">
 <div style="margin-bottom:12px"><a href="/coverage-demand">🔥 Coverage Demand</a> · <a href="/recruiting">Provider Recruiting</a></div><h1>LeadPilot Businesses</h1>
 <div class="muted">Each business gets its own customer page, settings, dashboard, service area, and leads.</div>
@@ -4680,7 +4738,7 @@ h1{{font-size:30px;margin:0}}
 <header>
   <div>
     <h1>Business Lead Inbox</h1>
-    <div class="sub">{html.escape(business["name"])}</div>
+    <div class="sub">LeadPilot AI · {html.escape(business["name"])}</div>
   </div>
   <div class="toplinks">
     <a href="/b/{business_id}">Customer page</a>
