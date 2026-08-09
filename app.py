@@ -25,6 +25,7 @@ NOTIFY_PHONE = os.environ.get("NOTIFY_PHONE", "").strip()
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
 BUSINESS_ID = 1
 print(
     "Twilio config:",
@@ -1258,7 +1259,7 @@ def coverage_demand_html(message=""):
     opportunity = (f"Top recruiting opportunity: {top['service']} in {top['area']} — {top['count']} waiting customer(s)." if top else "LeadPilot will rank recruiting opportunities as waitlist demand comes in.")
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>LeadPilot Coverage Demand</title><style>
 *{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}.wrap{{max-width:900px;margin:auto;padding:18px}}a{{color:#3448c5;text-decoration:none;font-weight:800}}h1{{margin:8px 0 4px}}.sub{{color:#667085}}.nav{{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0 20px}}.summary{{background:#172033;color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}}.summary span{{opacity:.75;font-size:13px}}.summary strong{{display:block;font-size:36px;margin:4px 0}}.summary-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}.summary p{{margin:8px 0 0;line-height:1.4}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.demand-card{{background:#fff;border-radius:16px;padding:18px;display:flex;justify-content:space-between;gap:14px;align-items:center;box-shadow:0 5px 18px rgba(0,0,0,.05)}}.demand-card.hot{{border:2px solid #fda29b}}.demand-card.warm{{border:2px solid #fedf89}}.eyebrow{{font-size:11px;text-transform:uppercase;font-weight:900;color:#667085}}h3{{font-size:21px;margin:5px 0}}.demand-card p{{margin:0;color:#667085}}.demand-count{{font-size:32px;font-weight:900;text-align:center;min-width:78px}}.recruit-btn{{display:inline-block;margin-top:12px;background:#172033;color:#fff!important;padding:9px 12px;border-radius:9px;font-size:12px}}.demand-count small{{display:block;font-size:11px;color:#667085}}h2{{margin-top:28px}}.request{{background:#fff;border-radius:14px;padding:14px 16px;margin:9px 0;display:flex;justify-content:space-between;gap:14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}.request span{{display:block;color:#667085;font-size:12px;margin-top:4px}}.contact{{text-align:right;font-weight:700}}.notify-btn{{margin-top:8px;border:0;border-radius:9px;background:#087443;color:#fff;padding:9px 11px;font-weight:800}}.email-note{{margin-top:8px;color:#93370d!important;font-size:11px!important}}.flash{{margin:12px 0;padding:12px;border-radius:10px;background:#e0e7ff;color:#29339b;font-weight:700}}.empty{{background:#fff;border-radius:14px;padding:22px;color:#667085}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}.summary-grid{{grid-template-columns:1fr 1fr 1fr}}.request{{display:block}}.contact{{text-align:left;margin-top:10px}}}}
-</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/recruiting">Provider Recruiting</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div>{f'<div class="flash">{html.escape(message)}</div>' if message else ''}<div class="summary">
+</style></head><body><div class="wrap"><div class="nav"><a href="/dashboard">Dashboard</a><a href="/recruiting">Provider Recruiting</a><a href="/businesses">Businesses</a><a href="/">Customer page</a><a href="/logout">Log out</a></div><h1>Coverage Demand</h1><div class="sub">Live unmet customer demand tells LeadPilot where to recruit verified providers next.</div>{"" if APP_BASE_URL else '<div class="flash">Beta setup: add APP_BASE_URL in Render so SMS notifications include a clickable LeadPilot link.</div>'}{f'<div class="flash">{html.escape(message)}</div>' if message else ''}<div class="summary">
 <div class="summary-grid">
 <div><span>Still waiting</span><strong>{waiting_total}</strong></div>
 <div><span>Ready to notify</span><strong>{ready_to_notify}</strong></div>
@@ -1672,6 +1673,7 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 
 <h1>Provider Recruiting</h1>
 <div class="sub">Turn unmet customer demand into a provider recruiting pipeline.</div>
+{"" if APP_BASE_URL else '<div class="flash">Beta setup: add APP_BASE_URL in Render so customer/provider SMS messages contain clickable LeadPilot links.</div>'}
 {f'<div class="flash">{html.escape(message)}</div>' if message else ''}
 
 <div class="stats">
@@ -2609,9 +2611,12 @@ def notify_waitlist_customer(waitlist_id):
     location = (row["city"] or row["location"] or "your area").strip()
     provider_name = business.get("name") or "a verified local provider"
 
+    return_url = APP_BASE_URL or ""
     body = (
         f"LeadPilot update: {provider_name} is now available for {service} "
-        f"in {location}. Return to LeadPilot to submit your request."
+        f"in {location}. "
+        + (f"Return to LeadPilot to submit your request: {return_url}" if return_url
+           else "Return to LeadPilot to submit your request.")
     )
 
     if not send_twilio_body(phone, body):
@@ -2704,6 +2709,61 @@ def lead_chase_worker():
     while True:
         run_lead_chase_once()
         time.sleep(60)
+
+
+def send_new_lead_sms(lead_id, name, phone, service, urgency, message,
+                      qualification, business_id=BUSINESS_ID):
+    """
+    Notify the matched provider immediately for every new marketplace lead.
+    Hot leads receive stronger wording, but only one initial SMS is sent.
+    """
+    business = get_business_settings(business_id)
+    alert_phone = (business.get("alert_phone") or NOTIFY_PHONE or "").strip()
+
+    if not alert_phone:
+        print("Provider SMS skipped: no alert phone configured.", flush=True)
+        return False
+
+    score = int(qualification.get("lead_score", 0))
+    quality = (qualification.get("qualification") or "Standard").strip()
+    customer_name = (name or "Customer").strip()
+    customer_phone = (phone or "No phone").strip()
+    service_name = (service or "General Repair").strip()
+    urgency_name = (urgency or "Normal").strip()
+
+    if quality == "Hot" or score >= 90:
+        lead_label = "🔥 HOT LEAD"
+        action = "Call now."
+    elif quality == "Strong" or score >= 70:
+        lead_label = "⚡ NEW STRONG LEAD"
+        action = "Contact within 5-10 minutes."
+    else:
+        lead_label = "📥 NEW LEAD"
+        action = "Review and contact promptly."
+
+    dashboard_url = ""
+    if APP_BASE_URL:
+        dashboard_url = f"{APP_BASE_URL}/dashboard?business={business_id}"
+
+    body = (
+        f"{lead_label} — {score}/100\\n"
+        f"{service_name} · {urgency_name} urgency\\n"
+        f"Customer: {customer_name}\\n"
+        f"Phone: {customer_phone}\\n"
+        f"{action}"
+    )
+    if dashboard_url:
+        body += f"\\nDashboard: {dashboard_url}"
+
+    ok = send_twilio_body(alert_phone, body)
+    print(
+        "Provider new-lead SMS:",
+        "sent" if ok else "failed",
+        "business", business_id,
+        "lead", lead_id,
+        flush=True
+    )
+    return ok
 
 
 def send_hot_lead_sms(lead_id, name, phone, service, urgency, message, qualification, business_id=BUSINESS_ID):
@@ -4023,8 +4083,9 @@ class Handler(BaseHTTPRequestHandler):
                 con.commit()
                 con.close()
 
-                # Notify the business immediately when LeadPilot marks the lead Hot.
-                send_hot_lead_sms(
+                # Notify the matched business immediately for EVERY new lead.
+                # Hot/Strong/Standard wording is handled inside the SMS helper.
+                send_new_lead_sms(
                     lead_id,
                     data.get("name"),
                     data.get("phone"),
