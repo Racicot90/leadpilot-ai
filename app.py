@@ -3410,55 +3410,278 @@ INDEX = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LeadPilot AI</title>
 <style>
-body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#172033}
-.wrap{max-width:720px;margin:auto;padding:24px}
-.card{background:#fff;border-radius:18px;padding:22px;box-shadow:0 8px 30px rgba(0,0,0,.08);margin-bottom:18px}
-h1{margin:0 0 8px;font-size:30px}.muted{color:#667085}
-.chat{min-height:180px;background:#f7f9fc;border-radius:14px;padding:14px;overflow:auto}
-.msg{padding:10px 12px;border-radius:12px;margin:8px 0;max-width:85%}
-.bot{background:#e9eefb}.user{background:#172033;color:#fff;margin-left:auto}
-.row{display:flex;gap:8px;margin-top:12px}
+*{box-sizing:border-box}
+:root{
+  --navy:#172033;
+  --navy2:#243453;
+  --blue:#3448c5;
+  --ink:#172033;
+  --muted:#667085;
+  --line:#e2e8f0;
+  --soft:#f7f9fc;
+  --green:#067647;
+  --green-soft:#ecfdf3;
+}
+body{
+  font-family:Arial,sans-serif;
+  margin:0;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at top right,rgba(52,72,197,.08),transparent 26%),
+    linear-gradient(180deg,#f8faff,#f3f6fa 420px,#f4f7fb);
+}
+.wrap{max-width:760px;margin:auto;padding:20px 16px 42px}
+.card{
+  background:#fff;
+  border:1px solid rgba(226,232,240,.9);
+  border-radius:22px;
+  padding:22px;
+  box-shadow:0 10px 30px rgba(20,32,51,.07);
+  margin-bottom:18px;
+}
+.brand-card{
+  position:relative;
+  overflow:hidden;
+  background:linear-gradient(145deg,#fff,#fbfcff);
+}
+.brand-row{display:flex;align-items:center;gap:13px}
+.logo{
+  width:48px;height:48px;border-radius:14px;
+  display:grid;place-items:center;
+  background:linear-gradient(145deg,var(--navy),var(--blue));
+  color:#fff;font-size:15px;font-weight:900;
+  box-shadow:0 8px 18px rgba(52,72,197,.23);
+}
+h1,h2,h3{letter-spacing:-.03em}
+h1{font-size:31px;margin:0}
+h2{font-size:27px;margin:0 0 8px}
+h3{font-size:20px;margin:0}
+.muted{color:var(--muted);line-height:1.45}
+.eyebrow{
+  color:var(--blue);font-size:11px;font-weight:900;
+  letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px
+}
+.business-banner{
+  margin-top:17px;padding:11px 13px;border-radius:12px;
+  background:#f3f6ff;border:1px solid #e0e7ff;
+  color:#344054;font-size:13px;font-weight:700;
+}
+.assistant-head{margin-bottom:18px}
+.chat{
+  min-height:210px;
+  max-height:410px;
+  overflow:auto;
+  background:linear-gradient(180deg,#f8faff,#f5f7fb);
+  border:1px solid #edf0f5;
+  border-radius:18px;
+  padding:14px;
+}
+.msg{
+  padding:12px 14px;border-radius:14px;margin:9px 0;
+  max-width:87%;line-height:1.42;font-size:15px
+}
+.bot{
+  background:#e9eefb;color:var(--ink);
+  border-bottom-left-radius:5px;
+}
+.user{
+  background:linear-gradient(145deg,var(--navy),#22314d);
+  color:#fff;margin-left:auto;border-bottom-right-radius:5px
+}
+.row{display:grid;grid-template-columns:1fr auto;gap:9px;margin-top:13px}
 input,textarea,button{font:inherit}
-input,textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d0d5dd;border-radius:10px;margin:6px 0}
-button{padding:12px 16px;border:0;border-radius:10px;background:#172033;color:#fff;font-weight:700}
-.success{color:#067647;font-weight:bold}a{color:#3448c5}
+input,textarea{
+  width:100%;padding:14px;border:1px solid #d0d5dd;
+  border-radius:12px;background:#fff;color:var(--ink);font-size:16px
+}
+input:focus,textarea:focus{outline:2px solid rgba(52,72,197,.13);border-color:#8090e6}
+button{
+  border:0;border-radius:12px;background:var(--navy);color:#fff;
+  font-weight:800;cursor:pointer
+}
+.send-chat{padding:0 20px;min-height:50px}
+.summary-card{display:none}
+.summary-card.visible{display:block}
+.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.summary-item{
+  background:#f8fafc;border:1px solid #edf0f4;border-radius:13px;
+  padding:13px;min-height:75px
+}
+.summary-item span{
+  display:block;color:var(--muted);font-size:11px;
+  text-transform:uppercase;letter-spacing:.05em;font-weight:800
+}
+.summary-item strong{display:block;margin-top:5px;font-size:16px}
+.problem-row{grid-column:1/-1}
+.contact-block{margin-top:18px;padding-top:18px;border-top:1px solid #eef1f5}
+.contact-block h3{margin-bottom:5px}
+.contact-grid{display:grid;gap:8px;margin-top:12px}
+.field-label{font-size:12px;font-weight:800;color:#344054;margin:5px 0 0}
+.optional{font-weight:400;color:var(--muted)}
+.primary-submit{
+  width:100%;padding:16px;margin-top:14px;
+  background:linear-gradient(145deg,var(--navy),#22314d);
+  font-size:16px;box-shadow:0 7px 16px rgba(20,32,51,.15)
+}
+.primary-submit:disabled{opacity:.65}
+.result{margin:11px 0 0;color:#b42318;font-size:13px}
+.confirmation{
+  display:none;
+  background:linear-gradient(180deg,#fff,#fbfffc);
+  border-color:#ccebd8;
+}
+.confirmation.visible{display:block}
+.success-icon{
+  width:52px;height:52px;border-radius:50%;
+  display:grid;place-items:center;background:var(--green-soft);
+  color:var(--green);font-size:25px;font-weight:900;margin-bottom:14px
+}
+.confirmation h2{color:#102a1e}
+.confirm-summary{margin:18px 0;display:grid;gap:8px}
+.confirm-row{
+  display:flex;justify-content:space-between;gap:16px;
+  padding:11px 0;border-bottom:1px solid #edf0f4
+}
+.confirm-row span{color:var(--muted)}
+.confirm-row strong{text-align:right}
+.next-box{
+  background:#f7f9fc;border-radius:14px;padding:16px;margin-top:18px
+}
+.next-box h3{font-size:17px;margin-bottom:10px}
+.next-step{display:flex;gap:10px;margin:9px 0;color:#475467;line-height:1.4}
+.step-num{
+  flex:0 0 24px;height:24px;border-radius:50%;
+  background:var(--navy);color:#fff;display:grid;place-items:center;
+  font-size:11px;font-weight:900
+}
+.owner-card{text-align:center;padding:17px}
+.owner-card a{color:var(--blue);font-weight:800;text-decoration:none}
+.trust-note{
+  display:flex;gap:9px;align-items:flex-start;margin-top:14px;
+  font-size:12px;color:var(--muted);line-height:1.4
+}
+.trust-shield{
+  width:24px;height:24px;border-radius:8px;background:#eef3ff;
+  color:var(--blue);display:grid;place-items:center;flex:0 0 24px
+}
+@media(max-width:600px){
+  .wrap{padding:12px 10px 34px}
+  .card{padding:18px;border-radius:19px}
+  h1{font-size:28px}
+  h2{font-size:25px}
+  .logo{width:44px;height:44px}
+  .summary-grid{grid-template-columns:1fr 1fr}
+  .row{grid-template-columns:1fr auto}
+  .send-chat{padding:0 17px}
+}
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<div class="card">
-<h1>LeadPilot AI</h1>
-<div class="muted">24/7 lead assistant for local service businesses</div>
+<div class="card brand-card">
+  <div class="brand-row">
+    <div class="logo">LP</div>
+    <div>
+      <div class="eyebrow">Local service request</div>
+      <h1>LeadPilot AI</h1>
+    </div>
+  </div>
+  <p class="muted" style="margin:15px 0 0;font-size:16px">Fast help from a local service professional.</p>
+  <p class="muted" style="margin:4px 0 0">Tell us what you need. We'll get your request to the right person.</p>
+  <div id="businessBanner" class="business-banner" style="display:none"></div>
 </div>
 
-<div class="card">
-<h2>How can we help?</h2>
-<div id="chat" class="chat">
-<div class="msg bot">Hi! Tell me what you need help with.</div>
-</div>
-<div class="row">
-<input id="message" placeholder="Describe the problem...">
-<button onclick="sendChat()">Send</button>
-</div>
+<div id="assistantCard" class="card">
+  <div class="assistant-head">
+    <div class="eyebrow">Request assistant</div>
+    <h2>How can we help?</h2>
+    <div class="muted">Describe what's going on in your own words.</div>
+  </div>
+
+  <div id="chat" class="chat">
+    <div class="msg bot">Hi! Tell me what you need help with today.</div>
+  </div>
+
+  <div class="row">
+    <input id="message" autocomplete="off" placeholder="Describe the problem...">
+    <button class="send-chat" onclick="sendChat()">Send</button>
+  </div>
+
+  <div class="trust-note">
+    <div class="trust-shield">✓</div>
+    <div>Your request details are used to connect you with the service business handling your request.</div>
+  </div>
 </div>
 
-<div class="card">
-<h2>Request summary</h2>
-<input id="name" placeholder="Name">
-<input id="phone" placeholder="Phone">
-<input id="email" placeholder="Email">
-<input id="zip" placeholder="ZIP / location">
-<input id="service" placeholder="Service type" readonly>
-<input id="urgency" placeholder="Urgency" readonly>
-<textarea id="details" rows="4" placeholder="Describe what you need"></textarea>
-<button onclick="submitLead()">Send Request</button>
-<p id="result"></p>
+<div id="summaryCard" class="card summary-card">
+  <div class="eyebrow">Review before sending</div>
+  <h2>Your request</h2>
+  <div class="muted">Check the details LeadPilot collected so far.</div>
+
+  <div class="summary-grid">
+    <div id="sumServiceWrap" class="summary-item" style="display:none">
+      <span>Service</span><strong id="sumService"></strong>
+    </div>
+    <div id="sumLocationWrap" class="summary-item" style="display:none">
+      <span>Location</span><strong id="sumLocation"></strong>
+    </div>
+    <div id="sumUrgencyWrap" class="summary-item" style="display:none">
+      <span>Urgency</span><strong id="sumUrgency"></strong>
+    </div>
+    <div id="sumProblemWrap" class="summary-item problem-row" style="display:none">
+      <span>Problem</span><strong id="sumProblem"></strong>
+    </div>
+  </div>
+
+  <div class="contact-block">
+    <h3>How should the business reach you?</h3>
+    <div class="muted">We won't ask you to re-enter anything LeadPilot already collected.</div>
+
+    <div class="contact-grid">
+      <div class="field-label">Name</div>
+      <input id="name" autocomplete="name" placeholder="Your name">
+
+      <div class="field-label">Phone</div>
+      <input id="phone" inputmode="tel" autocomplete="tel" placeholder="Best phone number">
+
+      <div class="field-label">Email <span class="optional">(optional)</span></div>
+      <input id="email" inputmode="email" autocomplete="email" placeholder="Email address">
+
+      <input id="zip" type="hidden">
+      <input id="service" type="hidden">
+      <input id="urgency" type="hidden">
+      <textarea id="details" style="display:none"></textarea>
+    </div>
+
+    <button id="submitButton" class="primary-submit" onclick="submitLead()">SEND MY REQUEST →</button>
+    <p id="result" class="result"></p>
+  </div>
 </div>
 
-<div class="card">
-<strong>Business owner?</strong>
-<a href="/login">Business login</a>
+<div id="confirmationCard" class="card confirmation">
+  <div class="success-icon">✓</div>
+  <div class="eyebrow" style="color:#067647">Request sent</div>
+  <h2 id="confirmTitle">You're all set.</h2>
+  <p id="confirmText" class="muted"></p>
+
+  <div class="confirm-summary">
+    <div id="confirmServiceRow" class="confirm-row"><span>Service</span><strong id="confirmService"></strong></div>
+    <div id="confirmLocationRow" class="confirm-row"><span>Location</span><strong id="confirmLocation"></strong></div>
+    <div id="confirmUrgencyRow" class="confirm-row"><span>Urgency</span><strong id="confirmUrgency"></strong></div>
+  </div>
+
+  <div class="next-box">
+    <h3>What happens next?</h3>
+    <div class="next-step"><div class="step-num">1</div><div>The business reviews your request.</div></div>
+    <div class="next-step"><div class="step-num">2</div><div>They'll contact you using the information you provided.</div></div>
+    <div class="next-step"><div class="step-num">3</div><div>You can discuss pricing, scheduling, and job details directly with them.</div></div>
+  </div>
+</div>
+
+<div class="card owner-card">
+  <strong>Business owner?</strong>
+  <a href="/login"> Business login →</a>
 </div>
 
 </div>
@@ -3483,6 +3706,8 @@ let chatContext = {
   lead_submitted: false
 };
 
+const configuredBusinessName = '__BUSINESS_NAME__';
+
 function add(text,cls){
  const c=document.getElementById('chat');
  const d=document.createElement('div');
@@ -3490,6 +3715,68 @@ function add(text,cls){
  d.textContent=text;
  c.appendChild(d);
  c.scrollTop=c.scrollHeight;
+}
+
+function setText(id,value){
+ const el=document.getElementById(id);
+ if(el) el.textContent=value||'';
+}
+
+function showSummaryItem(wrapId,textId,value){
+ const wrap=document.getElementById(wrapId);
+ if(!wrap)return;
+ if(value){
+   wrap.style.display='';
+   setText(textId,value);
+ }else{
+   wrap.style.display='none';
+ }
+}
+
+function refreshBusinessBanner(){
+ const banner=document.getElementById('businessBanner');
+ let name='';
+
+ if(chatContext.marketplace_mode){
+   name=chatContext.business_name||'';
+ }else{
+   name=chatContext.business_name||configuredBusinessName||'';
+ }
+
+ if(name && name!=='LeadPilot AI'){
+   banner.textContent='Requesting service from '+name;
+   banner.style.display='block';
+ }else{
+   banner.style.display='none';
+ }
+}
+
+function refreshSummary(){
+ const location=chatContext.customer_zip||chatContext.customer_location||'';
+
+ showSummaryItem('sumServiceWrap','sumService',chatContext.service);
+ showSummaryItem('sumLocationWrap','sumLocation',location);
+ showSummaryItem('sumUrgencyWrap','sumUrgency',chatContext.urgency);
+ showSummaryItem('sumProblemWrap','sumProblem',chatContext.issue);
+
+ const usefulInfo=chatContext.service||location||chatContext.issue||chatContext.customer_name||chatContext.customer_phone;
+ document.getElementById('summaryCard').classList.toggle('visible',!!usefulInfo);
+
+ const nameEl=document.getElementById('name');
+ const phoneEl=document.getElementById('phone');
+ const emailEl=document.getElementById('email');
+ const zipEl=document.getElementById('zip');
+
+ if(nameEl && chatContext.customer_name) nameEl.value=chatContext.customer_name;
+ if(phoneEl && chatContext.customer_phone) phoneEl.value=chatContext.customer_phone;
+ if(emailEl && chatContext.customer_email!==undefined) emailEl.value=chatContext.customer_email||'';
+ if(zipEl) zipEl.value=location;
+
+ document.getElementById('service').value=chatContext.service||'';
+ document.getElementById('urgency').value=chatContext.urgency||'';
+ document.getElementById('details').value=chatContext.issue||'';
+
+ refreshBusinessBanner();
 }
 
 async function sendChat(){
@@ -3505,9 +3792,9 @@ async function sendChat(){
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
      message,
-     context: chatContext,
-     business_id: __BUSINESS_ID__,
-     marketplace_mode: chatContext.marketplace_mode
+     context:chatContext,
+     business_id:__BUSINESS_ID__,
+     marketplace_mode:chatContext.marketplace_mode
    })
  });
 
@@ -3529,21 +3816,7 @@ async function sendChat(){
  if(j.waitlist_phone!==undefined) chatContext.waitlist_phone=j.waitlist_phone;
  if(j.waitlist_email!==undefined) chatContext.waitlist_email=j.waitlist_email;
 
- document.getElementById('service').value=chatContext.service;
- document.getElementById('urgency').value=chatContext.urgency;
- if(j.issue) document.getElementById('details').value=j.issue;
-
- const nameEl=document.getElementById('name');
- const phoneEl=document.getElementById('phone');
- const emailEl=document.getElementById('email');
- const zipEl=document.getElementById('zip');
-
- if(nameEl && chatContext.customer_name) nameEl.value=chatContext.customer_name;
- if(phoneEl && chatContext.customer_phone) phoneEl.value=chatContext.customer_phone;
- if(emailEl) emailEl.value=chatContext.customer_email||'';
- if(zipEl){
-   zipEl.value=chatContext.customer_zip||chatContext.customer_location||'';
- }
+ refreshSummary();
 
  if(j.submit_ready && chatContext.marketplace_mode && !chatContext.lead_submitted){
    await submitLead(true);
@@ -3552,12 +3825,13 @@ async function sendChat(){
 
 async function submitLead(auto=false){
  if(chatContext.lead_submitted)return;
+
  const data={
-   business_id: chatContext.matched_business_id || __BUSINESS_ID__,
-   name:document.getElementById('name').value,
-   phone:document.getElementById('phone').value,
-   email:document.getElementById('email').value,
-   zip:document.getElementById('zip').value,
+   business_id:chatContext.matched_business_id||__BUSINESS_ID__,
+   name:document.getElementById('name').value.trim(),
+   phone:document.getElementById('phone').value.trim(),
+   email:document.getElementById('email').value.trim(),
+   zip:document.getElementById('zip').value.trim(),
    service:document.getElementById('service').value||'General Repair',
    urgency:document.getElementById('urgency').value||'Normal',
    message:document.getElementById('details').value
@@ -3565,9 +3839,16 @@ async function submitLead(auto=false){
 
  const result=document.getElementById('result');
 
- if(!data.name || !data.phone){
-   result.textContent='Please complete the chat so I can collect your name and phone number.';
+ if(!data.name||!data.phone){
+   result.textContent='Please provide your name and phone number so the business can reach you.';
+   document.getElementById('summaryCard').classList.add('visible');
    return;
+ }
+
+ const button=document.getElementById('submitButton');
+ if(button){
+   button.disabled=true;
+   button.textContent='SENDING...';
  }
 
  const r=await fetch('/api/leads',{
@@ -3580,38 +3861,46 @@ async function submitLead(auto=false){
 
  if(r.ok){
    chatContext.lead_submitted=true;
-   const sendButton=document.querySelector('button[onclick="submitLead()"]');
-   if(sendButton){
-     sendButton.disabled=true;
-     sendButton.textContent='Request Sent ✓';
-   }
-
-   const businessName = chatContext.business_name || '__BUSINESS_NAME__';
-   const firstName = (data.name || '').trim().split(/\s+/)[0] || 'there';
-   result.className='success';
-   result.textContent =
-     `Thanks, ${firstName}. Your ${data.service.toLowerCase()} request has been sent to ${businessName}. ` +
-     `They'll contact you as soon as possible.`;
-
-   if(!auto){
-     add(
-       `Thanks, ${firstName}. Your request has been sent to ${businessName}. ` +
-       `They'll contact you as soon as possible.`,
-       'bot'
-     );
-   } else {
-     add(
-       `✓ Sent to ${businessName}. They'll contact you as soon as possible.`,
-       'bot'
-     );
-   }
-
    chatContext.intake_step='complete';
- } else {
-   result.className='';
+
+   const businessName=chatContext.business_name||configuredBusinessName||'the service business';
+   const firstName=(data.name||'').trim().split(/\s+/)[0]||'there';
+
+   setText('confirmTitle',`You're all set, ${firstName}.`);
+   setText('confirmText',`${businessName} received your request and will contact you using the information you provided.`);
+
+   const location=data.zip||chatContext.customer_location||'';
+   setText('confirmService',data.service);
+   setText('confirmLocation',location);
+   setText('confirmUrgency',data.urgency);
+
+   document.getElementById('confirmLocationRow').style.display=location?'flex':'none';
+   document.getElementById('confirmServiceRow').style.display=data.service?'flex':'none';
+   document.getElementById('confirmUrgencyRow').style.display=data.urgency?'flex':'none';
+
+   document.getElementById('assistantCard').style.display='none';
+   document.getElementById('summaryCard').style.display='none';
+   document.getElementById('confirmationCard').classList.add('visible');
+   refreshBusinessBanner();
+
+   window.scrollTo({top:0,behavior:'smooth'});
+ }else{
+   if(button){
+     button.disabled=false;
+     button.textContent='SEND MY REQUEST →';
+   }
    result.textContent='Something went wrong. Please try again.';
  }
 }
+
+document.getElementById('message').addEventListener('keydown',e=>{
+ if(e.key==='Enter'){
+   e.preventDefault();
+   sendChat();
+ }
+});
+
+refreshBusinessBanner();
 </script>
 </body>
 </html>"""
