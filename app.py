@@ -3990,8 +3990,17 @@ def lead_followup_status(row):
 
     return (css, text, wait_minutes, False)
 
+
+def lead_score_for_sort(row):
+    try:
+        return int(row["lead_score"] or 0)
+    except Exception:
+        return 0
+
+
 def dashboard_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
+
     con = db()
     rows = execute(
         con,
@@ -4005,30 +4014,85 @@ def dashboard_html(business_id=BUSINESS_ID):
 
     counts = {"New":0, "Contacted":0, "Estimate":0, "Won":0, "Lost":0}
     quality_counts = {"Hot":0, "Strong":0, "Qualified":0, "Standard":0}
-    followup_count = overdue_count = 0
-    opp_low = opp_high = won_revenue = 0.0
+
+    open_opp_low = open_opp_high = 0.0
+    overdue_opp_low = overdue_opp_high = 0.0
+    won_revenue = 0.0
+    overdue_count = 0
+    open_count = 0
+    completed_count = 0
+    won_count = 0
+
+    attention_rows = []
 
     for r in rows:
-        status = (r["status"] or "New").strip()
-        # Map old beta statuses into the V9 pipeline for display.
-        display_status = {"Booked":"Estimate", "Closed":"Won"}.get(status, status)
-        counts[display_status] = counts.get(display_status, 0) + 1
+        raw_status = (r["status"] or "New").strip()
+        status = {"Booked":"Estimate", "Closed":"Won"}.get(raw_status, raw_status)
+        counts[status] = counts.get(status, 0) + 1
 
         quality = r["qualification"] or "Standard"
         quality_counts[quality] = quality_counts.get(quality, 0) + 1
 
         low, high = lead_value_range(r, business_id)
-        if display_status not in ("Won", "Lost"):
-            opp_low += low
-            opp_high += high
-        if display_status == "Won":
+
+        if status in ("New", "Contacted", "Estimate"):
+            open_count += 1
+            open_opp_low += low
+            open_opp_high += high
+
+        if status == "Won":
+            won_count += 1
+            completed_count += 1
             won_revenue += float(r["final_job_value"] or 0)
 
-        if display_status == "New":
-            followup_count += 1
-            _, _, _, is_overdue = lead_followup_status(r)
-            overdue_count += 1 if is_overdue else 0
+        if status == "Lost":
+            completed_count += 1
 
+        followup_class, followup_text, wait_minutes, is_overdue = lead_followup_status(r)
+
+        if is_overdue and status in ("New", "Contacted"):
+            overdue_count += 1
+            overdue_opp_low += low
+            overdue_opp_high += high
+            attention_rows.append((lead_score_for_sort(r), wait_minutes, r, low, high, followup_text))
+
+    # Strongest / most urgent leads first in the attention queue.
+    attention_rows.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    conversion_rate = (won_count / completed_count * 100.0) if completed_count else 0.0
+    average_won = (won_revenue / won_count) if won_count else 0.0
+
+    # -------------------------------
+    # Needs Attention panel
+    # -------------------------------
+    attention_html = ""
+    for _score, wait_minutes, r, low, high, followup_text in attention_rows[:5]:
+        phone = (r["phone"] or "").strip()
+        value_text = (
+            f"{money(low)}–{money(high)}"
+            if (low > 0 or high > 0)
+            else "Value not set"
+        )
+        attention_html += f"""
+        <div class="attention-lead">
+          <div>
+            <div class="attn-name">{html.escape(r['name'] or 'Unnamed lead')}</div>
+            <div class="attn-meta">{html.escape(r['service'] or 'General Repair')} · {html.escape(r['zip'] or 'Location not provided')}</div>
+            <div class="attn-reason">{html.escape(followup_text)}</div>
+          </div>
+          <div class="attn-value">
+            <span>Opportunity</span>
+            <strong>{value_text}</strong>
+            <a href="tel:{html.escape(phone, quote=True)}">Call now</a>
+          </div>
+        </div>"""
+
+    if not attention_html:
+        attention_html = '<div class="attention-empty">No overdue leads right now. Your open pipeline is caught up.</div>'
+
+    # -------------------------------
+    # Lead cards
+    # -------------------------------
     cards = ""
     for r in rows:
         phone = (r["phone"] or "").strip()
@@ -4078,7 +4142,7 @@ def dashboard_html(business_id=BUSINESS_ID):
           <div class="details">
             <div><span>Service</span><strong>{html.escape(r['service'] or 'General Repair')}</strong></div>
             <div><span>Location</span><strong>{html.escape(r['zip'] or '—')}</strong></div>
-            <div><span>Phone</span><strong>{html.escape(phone or '—')}</strong></div>
+            <div><span>Phone</span><strong>{html.escape(display_phone(phone) if phone else '—')}</strong></div>
             <div><span>Email</span><strong>{html.escape(email or '—')}</strong></div>
           </div>
 
@@ -4092,7 +4156,7 @@ def dashboard_html(business_id=BUSINESS_ID):
             <div class="ai-action">{html.escape(recommended_action)}</div>
           </div>
 
-          <div class="followup-banner followup-{followup_class}"><strong>Follow-up:</strong> {followup_text}</div>
+          <div class="followup-banner followup-{followup_class}"><strong>Follow-up:</strong> {html.escape(followup_text)}</div>
 
           <div class="actions">
             <a class="action primary" href="tel:{html.escape(phone, quote=True)}">📞 Call</a>
@@ -4121,67 +4185,217 @@ def dashboard_html(business_id=BUSINESS_ID):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LeadPilot Business Lead Inbox</title>
 <style>
-*{{box-sizing:border-box}} body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
-.wrap{{max-width:980px;margin:auto;padding:20px}} header{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}}
-h1{{font-size:30px;margin:0}} .sub{{color:#667085;margin-top:5px}} .toplinks a{{margin-left:12px;text-decoration:none;color:#3448c5;font-weight:700}}
-.money-stats{{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px;margin:18px 0}}
-.money-card{{background:#172033;color:#fff;padding:18px;border-radius:16px}} .money-card.light{{background:#fff;color:#172033;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
-.money-card span{{display:block;font-size:12px;opacity:.72}} .money-card strong{{display:block;font-size:27px;margin-top:6px}} .money-card small{{display:block;margin-top:6px;opacity:.7}}
-.stats{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:12px 0 18px}} .stat{{background:#fff;padding:13px;border-radius:12px;box-shadow:0 4px 14px rgba(0,0,0,.05)}}
-.stat b{{display:block;font-size:23px;margin-top:4px}} .stat span{{font-size:11px;color:#667085}}
-.leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}} .lead-card{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
-.lead-top{{display:flex;justify-content:space-between;gap:12px}} .lead-name{{font-size:21px;font-weight:800}} .lead-time{{font-size:12px;color:#667085;margin-top:5px}}
-.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}} .badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
-.score-badge{{background:#172033;color:#fff}} .qual-hot{{background:#dcfae6;color:#05603a}} .qual-strong{{background:#e0e7ff;color:#3730a3}} .qual-qualified{{background:#eaf2ff;color:#175cd3}}
-.opportunity{{margin:14px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:12px}} .opportunity span,.opportunity small{{display:block;color:#667085;font-size:11px}}
-.opportunity strong{{display:block;font-size:22px;color:#05603a;margin:3px 0}} .details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}}
-.details div{{background:#f8fafc;padding:10px;border-radius:10px;overflow:hidden}} .details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}} .details strong{{font-size:14px;word-break:break-word}}
-.message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}} .ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
-.ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase}} .ai-action{{font-size:13px;color:#475467;margin-top:4px}} .reason-row{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}}
-.reason-chip{{background:#fff;border:1px solid #dbe3ef;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:700}} .next-label{{margin-top:10px;font-size:10px;font-weight:900;text-transform:uppercase;color:#667085}}
-.followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}} .followup-urgent,.followup-overdue{{background:#fee4e2;color:#b42318}}
-.followup-soon{{background:#fff0c2;color:#93370d}} .followup-today,.followup-contacted{{background:#eaf2ff;color:#175cd3}} .followup-normal,.followup-done{{background:#f2f4f7;color:#344054}}
-.followup-booked{{background:#dcfae6;color:#05603a}} .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
-.action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}} .action.primary{{background:#172033;color:#fff}}
-.status-row{{border-top:1px solid #eaecf0;padding-top:14px}} .status-row>label{{font-weight:800;font-size:13px}} .status-actions{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:8px}}
-.status-btn{{padding:10px 4px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#344054;font-weight:800;font-size:10px}} .status-btn.active{{background:#172033;color:#fff;border-color:#172033}}
-.won-box{{margin-top:10px;background:#f0fdf4;padding:12px;border-radius:10px}} .won-box label{{font-size:12px;font-weight:800}} .won-input{{display:flex;align-items:center;gap:6px;margin-top:6px}}
-.won-input input{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:16px}} .won-input button{{border:0;background:#067647;color:#fff;border-radius:8px;padding:11px 13px;font-weight:800}}
-.won-box small{{display:block;color:#667085;margin-top:6px}} .saved{{display:block;color:#067647;font-size:12px;min-height:14px;margin-top:6px}} .empty{{background:#fff;padding:25px;border-radius:16px}}
-@media(max-width:700px){{.wrap{{padding:14px}} header{{display:block}} .toplinks{{margin-top:10px}} .toplinks a{{margin:0 10px 0 0}} .money-stats{{grid-template-columns:1fr}} .stats{{grid-template-columns:repeat(3,1fr)}} .leads{{grid-template-columns:1fr}} .status-actions{{grid-template-columns:repeat(3,1fr)}}}}
-</style></head><body><div class="wrap">
-<header><div><h1>Business Lead Inbox</h1><div class="sub">{html.escape(business["name"])}</div></div>
-<div class="toplinks"><a href="/b/{business_id}">Customer page</a><a href="/revenue-estimates?business={business_id}">Revenue Estimates</a><a href="/settings?business={business_id}">Settings</a><a href="/businesses">Businesses</a><a href="/logout">Log out</a></div></header>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:980px;margin:auto;padding:20px}}
+header{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}}
+h1{{font-size:30px;margin:0}}
+.sub{{color:#667085;margin-top:5px}}
+.toplinks a{{margin-left:12px;text-decoration:none;color:#3448c5;font-weight:700}}
 
-<div class="money-stats">
-<div class="money-card"><span>Open estimated opportunity</span><strong>{money(opp_low)}–{money(opp_high)}</strong><small>Based on this business's own configured service ranges.</small></div>
-<div class="money-card light"><span>Actual won revenue</span><strong>{money(won_revenue)}</strong><small>Entered when leads are marked Won.</small></div>
-<div class="money-card light"><span>Routing health</span><strong>{routing_metrics["health"]}/100</strong><small>{routing_metrics["today_count"]} lead(s) today · {overdue_count} overdue</small></div>
+.money-grid{{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr;gap:10px;margin:18px 0}}
+.money-card{{background:#172033;color:#fff;padding:18px;border-radius:16px}}
+.money-card.light{{background:#fff;color:#172033;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
+.money-card.risk{{background:#fff4ed;color:#9a3412;border:1px solid #fed7aa}}
+.money-card span{{display:block;font-size:12px;opacity:.72}}
+.money-card strong{{display:block;font-size:27px;margin-top:6px}}
+.money-card small{{display:block;margin-top:6px;opacity:.7;line-height:1.3}}
+
+.stats{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:12px 0 18px}}
+.stat{{background:#fff;padding:13px;border-radius:12px;box-shadow:0 4px 14px rgba(0,0,0,.05)}}
+.stat b{{display:block;font-size:23px;margin-top:4px}}
+.stat span{{font-size:11px;color:#667085}}
+
+.attention{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07);margin:16px 0 20px}}
+.attention-title{{display:flex;justify-content:space-between;gap:12px;align-items:end;margin-bottom:10px}}
+.attention-title h2{{margin:0}}
+.attention-title span{{font-size:12px;color:#667085}}
+.attention-lead{{display:flex;justify-content:space-between;gap:14px;padding:13px 0;border-top:1px solid #eaecf0}}
+.attn-name{{font-weight:800;font-size:16px}}
+.attn-meta,.attn-reason{{font-size:12px;color:#667085;margin-top:4px}}
+.attn-reason{{color:#b42318;font-weight:700}}
+.attn-value{{text-align:right;min-width:130px}}
+.attn-value span{{font-size:10px;text-transform:uppercase;color:#667085}}
+.attn-value strong{{display:block;font-size:16px;margin:3px 0 7px}}
+.attn-value a{{display:inline-block;background:#172033;color:#fff;text-decoration:none;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:800}}
+.attention-empty{{padding:16px;background:#f8fafc;border-radius:10px;color:#667085}}
+
+.section-title{{display:flex;justify-content:space-between;gap:10px;align-items:end;margin:18px 0 10px}}
+.section-title h2{{margin:0}}
+.section-title span{{font-size:12px;color:#667085}}
+
+.leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+.lead-card{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
+.lead-top{{display:flex;justify-content:space-between;gap:12px}}
+.lead-name{{font-size:21px;font-weight:800}}
+.lead-time{{font-size:12px;color:#667085;margin-top:5px}}
+.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
+.badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
+.score-badge{{background:#172033;color:#fff}}
+.qual-hot{{background:#dcfae6;color:#05603a}}
+.qual-strong{{background:#e0e7ff;color:#3730a3}}
+.qual-qualified{{background:#eaf2ff;color:#175cd3}}
+
+.opportunity{{margin:14px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:12px}}
+.opportunity span,.opportunity small{{display:block;color:#667085;font-size:11px}}
+.opportunity strong{{display:block;font-size:22px;color:#05603a;margin:3px 0}}
+
+.details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}}
+.details div{{background:#f8fafc;padding:10px;border-radius:10px;overflow:hidden}}
+.details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}}
+.details strong{{font-size:14px;word-break:break-word}}
+.message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}}
+
+.ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
+.ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase}}
+.ai-action{{font-size:13px;color:#475467;margin-top:4px}}
+.reason-row{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}}
+.reason-chip{{background:#fff;border:1px solid #dbe3ef;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:700}}
+.next-label{{margin-top:10px;font-size:10px;font-weight:900;text-transform:uppercase;color:#667085}}
+
+.followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}}
+.followup-urgent,.followup-overdue{{background:#fee4e2;color:#b42318}}
+.followup-soon{{background:#fff0c2;color:#93370d}}
+.followup-today,.followup-contacted{{background:#eaf2ff;color:#175cd3}}
+.followup-normal,.followup-done{{background:#f2f4f7;color:#344054}}
+.followup-booked{{background:#dcfae6;color:#05603a}}
+
+.actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
+.action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
+.action.primary{{background:#172033;color:#fff}}
+
+.status-row{{border-top:1px solid #eaecf0;padding-top:14px}}
+.status-row>label{{font-weight:800;font-size:13px}}
+.status-actions{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:8px}}
+.status-btn{{padding:10px 4px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#344054;font-weight:800;font-size:10px}}
+.status-btn.active{{background:#172033;color:#fff;border-color:#172033}}
+.won-box{{margin-top:10px;background:#f0fdf4;padding:12px;border-radius:10px}}
+.won-box label{{font-size:12px;font-weight:800}}
+.won-input{{display:flex;align-items:center;gap:6px;margin-top:6px}}
+.won-input input{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:16px}}
+.won-input button{{border:0;background:#067647;color:#fff;border-radius:8px;padding:11px 13px;font-weight:800}}
+.won-box small{{display:block;color:#667085;margin-top:6px}}
+.saved{{display:block;color:#067647;font-size:12px;min-height:14px;margin-top:6px}}
+.empty{{background:#fff;padding:25px;border-radius:16px}}
+
+@media(max-width:820px){{
+  .money-grid{{grid-template-columns:1fr 1fr}}
+}}
+@media(max-width:700px){{
+  .wrap{{padding:14px}}
+  header{{display:block}}
+  .toplinks{{margin-top:10px}}
+  .toplinks a{{margin:0 10px 0 0}}
+  .money-grid{{grid-template-columns:1fr}}
+  .stats{{grid-template-columns:repeat(3,1fr)}}
+  .leads{{grid-template-columns:1fr}}
+  .status-actions{{grid-template-columns:repeat(3,1fr)}}
+  .attention-lead{{align-items:flex-start}}
+}}
+</style></head><body><div class="wrap">
+
+<header>
+  <div>
+    <h1>Business Lead Inbox</h1>
+    <div class="sub">{html.escape(business["name"])}</div>
+  </div>
+  <div class="toplinks">
+    <a href="/b/{business_id}">Customer page</a>
+    <a href="/revenue-estimates?business={business_id}">Revenue Estimates</a>
+    <a href="/settings?business={business_id}">Settings</a>
+    <a href="/businesses">Businesses</a>
+    <a href="/logout">Log out</a>
+  </div>
+</header>
+
+<div class="money-grid">
+  <div class="money-card">
+    <span>Open estimated opportunity</span>
+    <strong>{money(open_opp_low)}–{money(open_opp_high)}</strong>
+    <small>Estimated value of New, Contacted, and Estimate-stage leads.</small>
+  </div>
+
+  <div class="money-card risk">
+    <span>Potential revenue at risk</span>
+    <strong>{money(overdue_opp_low)}–{money(overdue_opp_high)}</strong>
+    <small>{overdue_count} overdue lead(s) currently need attention.</small>
+  </div>
+
+  <div class="money-card light">
+    <span>Actual won revenue</span>
+    <strong>{money(won_revenue)}</strong>
+    <small>{won_count} won job(s) · avg {money(average_won) if won_count else "$0"}</small>
+  </div>
+
+  <div class="money-card light">
+    <span>Close rate</span>
+    <strong>{conversion_rate:.0f}%</strong>
+    <small>Won ÷ completed outcomes (Won + Lost).</small>
+  </div>
 </div>
 
 <div class="stats">
-<div class="stat"><span>New</span><b>{counts["New"]}</b></div><div class="stat"><span>Contacted</span><b>{counts["Contacted"]}</b></div>
-<div class="stat"><span>Estimate</span><b>{counts["Estimate"]}</b></div><div class="stat"><span>Won</span><b>{counts["Won"]}</b></div><div class="stat"><span>Lost</span><b>{counts["Lost"]}</b></div>
+  <div class="stat"><span>New</span><b>{counts["New"]}</b></div>
+  <div class="stat"><span>Contacted</span><b>{counts["Contacted"]}</b></div>
+  <div class="stat"><span>Estimate</span><b>{counts["Estimate"]}</b></div>
+  <div class="stat"><span>Won</span><b>{counts["Won"]}</b></div>
+  <div class="stat"><span>Lost</span><b>{counts["Lost"]}</b></div>
+</div>
+
+<div class="attention">
+  <div class="attention-title">
+    <h2>Needs Attention</h2>
+    <span>Highest-value overdue opportunities first</span>
+  </div>
+  {attention_html}
+</div>
+
+<div class="section-title">
+  <h2>Lead Pipeline</h2>
+  <span>{open_count} open · Routing health {routing_metrics["health"]}/100</span>
 </div>
 
 <div class="leads">{cards}</div>
 </div>
+
 <script>
 setTimeout(()=>location.reload(),60000);
+
 async function updateStatus(id,status){{
- const s=document.getElementById('saved-'+id); s.textContent='Saving '+status+'...';
- const r=await fetch('/api/leads/'+id+'/status?business={business_id}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{status}})}});
- if(r.ok){{ document.getElementById('wonbox-'+id).style.display=status==='Won'?'block':'none'; s.textContent='✓ '+status; setTimeout(()=>location.reload(),700); }}
- else s.textContent='Could not save';
+ const s=document.getElementById('saved-'+id);
+ s.textContent='Saving '+status+'...';
+
+ const r=await fetch('/api/leads/'+id+'/status?business={business_id}',{{
+   method:'POST',
+   headers:{{'Content-Type':'application/json'}},
+   body:JSON.stringify({{status}})
+ }});
+
+ if(r.ok){{
+   document.getElementById('wonbox-'+id).style.display=status==='Won'?'block':'none';
+   s.textContent='✓ '+status;
+   setTimeout(()=>location.reload(),700);
+ }} else {{
+   s.textContent='Could not save';
+ }}
 }}
+
 async function saveValue(id){{
- const s=document.getElementById('saved-'+id), value=document.getElementById('value-'+id).value;
+ const s=document.getElementById('saved-'+id);
+ const value=document.getElementById('value-'+id).value;
  s.textContent='Saving job value...';
- const r=await fetch('/api/leads/'+id+'/value?business={business_id}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{final_job_value:value}})}});
+
+ const r=await fetch('/api/leads/'+id+'/value?business={business_id}',{{
+   method:'POST',
+   headers:{{'Content-Type':'application/json'}},
+   body:JSON.stringify({{final_job_value:value}})
+ }});
+
  s.textContent=r.ok?'✓ Job value saved':'Could not save job value';
  if(r.ok) setTimeout(()=>location.reload(),700);
 }}
-</script></body></html>"""
+</script>
+</body></html>"""
 
 class Handler(BaseHTTPRequestHandler):
 
