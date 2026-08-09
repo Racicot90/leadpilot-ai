@@ -3999,6 +3999,48 @@ def lead_score_for_sort(row):
 
 
 
+def historical_close_rate_for_lead(row, business_id):
+    """
+    Return a stabilized historical close-rate signal for this business/service.
+
+    The displayed opportunity value stays unchanged. This signal is used only
+    inside priority ranking. A small Bayesian-style prior prevents a tiny
+    sample (for example 1 win or 1 loss) from swinging the queue too hard.
+    """
+    service = _normalize_service_name(row["service"] or "")
+    if not service:
+        return 0.50, 0
+
+    con = db()
+    try:
+        history = execute(
+            con,
+            """SELECT service, status FROM leads
+               WHERE business_id=? AND status IN ('Won','Lost','Closed')""",
+            (business_id,)
+        ).fetchall()
+    finally:
+        con.close()
+
+    wins = 0
+    losses = 0
+    for h in history:
+        if _normalize_service_name(h["service"] or "") != service:
+            continue
+        status = (h["status"] or "").strip()
+        if status in ("Won", "Closed"):
+            wins += 1
+        elif status == "Lost":
+            losses += 1
+
+    outcomes = wins + losses
+
+    # Neutral 50% prior with the weight of 5 completed jobs.
+    # As real outcomes accumulate, the business's own close rate takes over.
+    stabilized_rate = (wins + 2.5) / (outcomes + 5.0)
+    return stabilized_rate, outcomes
+
+
 def priority_rank(row, business_id):
     """
     Revenue-weighted priority score.
@@ -4006,9 +4048,10 @@ def priority_rank(row, business_id):
     Goal: rank the lead with the best combination of:
     1. Dollar opportunity
     2. Qualification / likelihood to close
-    3. Urgency
-    4. Response-time pressure
-    5. Pipeline stage
+    3. The business's historical close likelihood for that service
+    4. Urgency
+    5. Response-time pressure
+    6. Pipeline stage
 
     Revenue is intentionally the strongest single factor, but a weak,
     low-quality large job will not automatically beat a strong, urgent lead.
@@ -4065,7 +4108,16 @@ def priority_rank(row, business_id):
     qualification_score = lead_score
 
     # -----------------------------
-    # 3) Urgency — max 100
+    # 3) Historical close likelihood — max 100
+    # -----------------------------
+    # Invisible ranking signal only. We NEVER reduce the opportunity shown to
+    # the owner. An $8,000 average job remains an ~$8,000 opportunity; this
+    # simply helps LeadPilot decide which lead deserves attention first.
+    historical_rate, historical_outcomes = historical_close_rate_for_lead(row, business_id)
+    historical_score = historical_rate * 100.0
+
+    # -----------------------------
+    # 4) Urgency — max 100
     # -----------------------------
     if urgency == "emergency":
         urgency_score = 100
@@ -4075,7 +4127,7 @@ def priority_rank(row, business_id):
         urgency_score = 25
 
     # -----------------------------
-    # 4) Response pressure — max 100
+    # 5) Response pressure — max 100
     # -----------------------------
     hours_waiting = max(wait_minutes, 0) / 60.0
     if is_overdue and hours_waiting >= 24:
@@ -4092,7 +4144,7 @@ def priority_rank(row, business_id):
         response_score = 15
 
     # -----------------------------
-    # 5) Pipeline stage — max 100
+    # 6) Pipeline stage — max 100
     # -----------------------------
     stage_score = {
         "New": 100,
@@ -4103,9 +4155,10 @@ def priority_rank(row, business_id):
     # Revenue is the strongest component.
     rank = (
         revenue_score * 0.45 +
-        qualification_score * 0.25 +
-        urgency_score * 0.15 +
-        response_score * 0.10 +
+        qualification_score * 0.20 +
+        historical_score * 0.10 +
+        urgency_score * 0.12 +
+        response_score * 0.08 +
         stage_score * 0.05
     )
 
