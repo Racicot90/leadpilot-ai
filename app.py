@@ -2765,12 +2765,12 @@ def send_twilio_body(to_phone, body, return_error=False):
     Never raises into the user flow. Returns False on failure, or (ok,error)
     when return_error=True.
     """
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_FROM_NUMBER:
-        err = "Twilio is not fully configured."
-        print("Twilio skipped:", err, flush=True)
-        return (False, err) if return_error else False
-
     try:
+        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
+            err = "Twilio is not fully configured."
+            print("Twilio skipped:", err, flush=True)
+            return (False, err) if return_error else False
+
         import urllib.parse
         import urllib.request
         import base64
@@ -2781,7 +2781,7 @@ def send_twilio_body(to_phone, body, return_error=False):
         )
         payload = urllib.parse.urlencode({
             "To": to_phone,
-            "From": TWILIO_FROM_NUMBER,
+            "From": TWILIO_PHONE_NUMBER,
             "Body": body,
         }).encode()
 
@@ -4419,7 +4419,7 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         except Exception as e:
-            print("ERROR:", repr(e))
+            print("ERROR:", repr(e), flush=True)
 
             self.send_bytes(
                 json.dumps({"error":"server error"}).encode(),
