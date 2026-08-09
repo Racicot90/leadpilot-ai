@@ -3998,6 +3998,85 @@ def lead_score_for_sort(row):
         return 0
 
 
+
+def priority_rank(row, business_id):
+    low, high = lead_value_range(row, business_id)
+    midpoint = ((low or 0) + (high or 0)) / 2.0
+
+    raw_status = (row["status"] or "New").strip()
+    status = {"Booked":"Estimate", "Closed":"Won"}.get(raw_status, raw_status)
+
+    if status not in ("New", "Contacted", "Estimate"):
+        return -1
+
+    try:
+        lead_score = int(row["lead_score"] or 0)
+    except Exception:
+        lead_score = 0
+
+    _, _, wait_minutes, is_overdue = lead_followup_status(row)
+    urgency = (row["urgency"] or "Normal").strip().lower()
+
+    rank = float(lead_score)
+
+    # Opportunity value matters, but don't let a single very large estimate
+    # completely overwhelm qualification and urgency.
+    if midpoint > 0:
+        rank += min(midpoint / 500.0, 40)
+
+    if is_overdue:
+        rank += 22
+
+    if wait_minutes >= 60:
+        rank += min(wait_minutes / 60.0, 18)
+
+    if urgency == "emergency":
+        rank += 25
+    elif urgency == "high":
+        rank += 15
+
+    if status == "New":
+        rank += 8
+    elif status == "Contacted":
+        rank += 3
+
+    return rank
+
+
+def priority_reason(row, business_id):
+    low, high = lead_value_range(row, business_id)
+    reasons = []
+
+    try:
+        score = int(row["lead_score"] or 0)
+    except Exception:
+        score = 0
+
+    _, _, wait_minutes, is_overdue = lead_followup_status(row)
+    urgency = (row["urgency"] or "Normal").strip().lower()
+
+    if low > 0 or high > 0:
+        reasons.append("high-value opportunity" if high >= 5000 else "revenue opportunity")
+
+    if score >= 80:
+        reasons.append("strong lead score")
+    elif score >= 65:
+        reasons.append("qualified lead")
+
+    if urgency in ("high", "emergency"):
+        reasons.append("high urgency")
+
+    if is_overdue:
+        reasons.append("overdue follow-up")
+    elif wait_minutes >= 30:
+        reasons.append("waiting customer")
+
+    if not reasons:
+        reasons.append("best current open lead")
+
+    return " + ".join(reasons[:3])
+
+
 def dashboard_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
 
@@ -4059,8 +4138,70 @@ def dashboard_html(business_id=BUSINESS_ID):
     # Strongest / most urgent leads first in the attention queue.
     attention_rows.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
+    # Today's single best lead to work first.
+    priority_candidates = []
+    for r in rows:
+        rank = priority_rank(r, business_id)
+        if rank >= 0:
+            priority_candidates.append((rank, r))
+
+    priority_candidates.sort(key=lambda x: x[0], reverse=True)
+    priority_row = priority_candidates[0][1] if priority_candidates else None
+
     conversion_rate = (won_count / completed_count * 100.0) if completed_count else 0.0
     average_won = (won_revenue / won_count) if won_count else 0.0
+
+    # -------------------------------
+    # Today's Priority
+    # -------------------------------
+    if priority_row:
+        p_low, p_high = lead_value_range(priority_row, business_id)
+        _, _, p_wait_minutes, p_overdue = lead_followup_status(priority_row)
+        p_phone = (priority_row["phone"] or "").strip()
+        p_value = (
+            f"{money(p_low)}–{money(p_high)}"
+            if (p_low > 0 or p_high > 0)
+            else "Value not set"
+        )
+        p_score = int(priority_row["lead_score"] or 0)
+        p_service = html.escape(priority_row["service"] or "General Repair")
+        p_location = html.escape(priority_row["zip"] or "Location not provided")
+        p_name = html.escape(priority_row["name"] or "Unnamed lead")
+        p_reason = html.escape(priority_reason(priority_row, business_id))
+        p_wait = format_wait_time(p_wait_minutes)
+
+        priority_html = f"""
+        <section class="priority-card">
+          <div class="priority-kicker">🔥 #1 PRIORITY TODAY</div>
+          <div class="priority-main">
+            <div>
+              <div class="priority-name">{p_name}</div>
+              <div class="priority-service">{p_service} · {p_location}</div>
+              <div class="priority-reason">Why: {p_reason}</div>
+            </div>
+            <div class="priority-value">
+              <span>Opportunity</span>
+              <strong>{p_value}</strong>
+            </div>
+          </div>
+
+          <div class="priority-facts">
+            <div><span>Lead score</span><strong>{p_score}/100</strong></div>
+            <div><span>Waiting</span><strong>{p_wait}</strong></div>
+            <div><span>Status</span><strong>{"Overdue" if p_overdue else "Open"}</strong></div>
+          </div>
+
+          <a class="priority-call" href="tel:{html.escape(p_phone, quote=True)}">📞 CALL THIS LEAD NOW</a>
+        </section>
+        """
+    else:
+        priority_html = """
+        <section class="priority-card priority-empty">
+          <div class="priority-kicker">🔥 TODAY'S PRIORITY</div>
+          <div class="priority-name">No open leads right now</div>
+          <div class="priority-reason">New opportunities will appear here automatically.</div>
+        </section>
+        """
 
     # -------------------------------
     # Needs Attention panel
@@ -4193,6 +4334,21 @@ h1{{font-size:30px;margin:0}}
 .sub{{color:#667085;margin-top:5px}}
 .toplinks a{{margin-left:12px;text-decoration:none;color:#3448c5;font-weight:700}}
 
+.priority-card{{background:linear-gradient(135deg,#172033,#24304a);color:#fff;border-radius:20px;padding:20px;margin:18px 0;box-shadow:0 10px 30px rgba(23,32,51,.18)}}
+.priority-empty{{background:#172033}}
+.priority-kicker{{font-size:13px;font-weight:900;letter-spacing:.04em;color:#ffd66b;margin-bottom:12px}}
+.priority-main{{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}}
+.priority-name{{font-size:26px;font-weight:900}}
+.priority-service{{font-size:14px;color:#d0d5dd;margin-top:4px}}
+.priority-reason{{font-size:13px;color:#e4e7ec;margin-top:10px;line-height:1.4}}
+.priority-value{{text-align:right;min-width:155px}}
+.priority-value span{{display:block;font-size:11px;text-transform:uppercase;color:#98a2b3}}
+.priority-value strong{{display:block;font-size:25px;margin-top:5px}}
+.priority-facts{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}}
+.priority-facts div{{background:rgba(255,255,255,.08);border-radius:10px;padding:10px}}
+.priority-facts span{{display:block;font-size:10px;text-transform:uppercase;color:#b8c0cc}}
+.priority-facts strong{{display:block;font-size:15px;margin-top:3px}}
+.priority-call{{display:block;text-align:center;background:#fff;color:#172033;text-decoration:none;border-radius:11px;padding:14px;font-size:15px;font-weight:900}}
 .money-grid{{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr;gap:10px;margin:18px 0}}
 .money-card{{background:#172033;color:#fff;padding:18px;border-radius:16px}}
 .money-card.light{{background:#fff;color:#172033;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
@@ -4286,6 +4442,9 @@ h1{{font-size:30px;margin:0}}
   header{{display:block}}
   .toplinks{{margin-top:10px}}
   .toplinks a{{margin:0 10px 0 0}}
+  .priority-main{{display:block}}
+  .priority-value{{text-align:left;margin-top:14px}}
+  .priority-facts{{grid-template-columns:1fr 1fr 1fr}}
   .money-grid{{grid-template-columns:1fr}}
   .stats{{grid-template-columns:repeat(3,1fr)}}
   .leads{{grid-template-columns:1fr}}
@@ -4307,6 +4466,8 @@ h1{{font-size:30px;margin:0}}
     <a href="/logout">Log out</a>
   </div>
 </header>
+
+{priority_html}
 
 <div class="money-grid">
   <div class="money-card">
