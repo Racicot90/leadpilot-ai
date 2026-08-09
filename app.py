@@ -2229,8 +2229,15 @@ def marketplace_reply(message, context=None):
     # Let the customer change service naturally at any point.
     switched_service, switched_urgency = classify(msg)
     service_words = {
-        "HVAC": ["hvac", "ac", "a/c", "air conditioning", "heat", "furnace"],
-        "Plumbing": ["plumber", "plumbing", "pipe", "toilet", "sink", "drain", "water leak"],
+        "Plumbing": [
+            "water heater", "hot water heater", "tankless",
+            "plumber", "plumbing", "pipe", "toilet", "sink", "faucet",
+            "drain", "sewer", "garbage disposal", "water leak"
+        ],
+        "HVAC": [
+            "hvac", "air conditioning", "a/c", "ac", "furnace",
+            "heat pump", "central heat", "heating system"
+        ],
         "Electrical": ["electrician", "electrical", "electric", "outlet", "breaker", "wiring", "power"],
         "Roofing": ["roofer", "roofing", "roof", "shingle"]
     }
@@ -2463,13 +2470,25 @@ def marketplace_reply(message, context=None):
 def classify(text):
     t = (text or "").lower()
 
-    if any(x in t for x in ["ac ", "ac.", "my ac", "a/c", "air condition", "hvac", "heat", "furnace"]):
-        service = "HVAC"
-    elif any(x in t for x in ["pipe", "plumb", "toilet", "sink", "drain", "water leak", "leak"]):
+    plumbing_terms = [
+        "water heater", "hot water heater", "tankless",
+        "pipe", "plumb", "toilet", "sink", "faucet", "drain",
+        "sewer", "garbage disposal", "water leak", "leak"
+    ]
+    hvac_terms = [
+        "ac ", "ac.", "my ac", "a/c", "air condition", "hvac",
+        "furnace", "heat pump", "central heat", "heating system"
+    ]
+    electrical_terms = ["electric", "outlet", "breaker", "power", "wire", "wiring", "sparking"]
+    roofing_terms = ["roof", "shingle", "roof leak", "ceiling leak"]
+
+    if any(x in t for x in plumbing_terms):
         service = "Plumbing"
-    elif any(x in t for x in ["electric", "outlet", "breaker", "power", "wire", "wiring", "sparking"]):
+    elif any(x in t for x in hvac_terms):
+        service = "HVAC"
+    elif any(x in t for x in electrical_terms):
         service = "Electrical"
-    elif any(x in t for x in ["roof", "shingle", "roof leak", "ceiling leak"]):
+    elif any(x in t for x in roofing_terms):
         service = "Roofing"
     else:
         service = "General Repair"
@@ -2478,12 +2497,10 @@ def classify(text):
         "gas leak", "smell gas", "fire", "sparking", "electrical arcing",
         "burst pipe", "major flooding", "water pouring", "ceiling collapsing"
     ]
-
     high_time_signals = [
         "today", "asap", "urgent", "right now", "immediately",
         "need it fixed now", "need someone now", "same day"
     ]
-
     active_problem_signals = [
         "not working", "stopped working", "no ac", "no heat",
         "leaking", "leak", "flooding", "overflowing", "broken",
@@ -3718,6 +3735,48 @@ def get_service_pricing(business_id):
     return [dict(r) for r in rows]
 
 
+def _pricing_category(label):
+    t = (label or "").strip().lower()
+    if any(x in t for x in [
+        "sink", "faucet", "toilet", "drain", "pipe", "sewer",
+        "plumb", "water heater", "tankless", "garbage disposal", "water line"
+    ]):
+        return "plumbing"
+    if any(x in t for x in [
+        "hvac", "air condition", "a/c", "ac service", "furnace",
+        "heat pump", "heating system"
+    ]):
+        return "hvac"
+    if any(x in t for x in ["roof", "shingle"]):
+        return "roofing"
+    if any(x in t for x in ["electric", "outlet", "breaker", "panel", "wiring"]):
+        return "electrical"
+    return ""
+
+
+def _pricing_keywords(label):
+    t = (label or "").strip().lower()
+    groups = {
+        "sink": ["sink"],
+        "faucet": ["faucet"],
+        "toilet": ["toilet"],
+        "drain": ["drain", "clog"],
+        "sewer": ["sewer"],
+        "pipe": ["pipe"],
+        "garbage disposal": ["garbage disposal", "disposal"],
+        "water heater": ["water heater", "hot water", "tankless"],
+        "replacement": ["replacement", "replace", "replacing", "new system", "new roof"],
+        "repair": ["repair", "repaired", "fix", "fixed", "broken"],
+        "service": ["service", "maintenance", "tune up", "tune-up"],
+        "leak": ["leak", "leaking"],
+        "panel": ["panel"],
+        "outlet": ["outlet"],
+        "breaker": ["breaker"],
+        "shingle": ["shingle"],
+    }
+    return [(concept, variants) for concept, variants in groups.items() if any(v in t for v in variants)]
+
+
 def pricing_for_service(business_id, service):
     service_norm = (service or "").strip().lower()
     if not service_norm:
@@ -3726,23 +3785,84 @@ def pricing_for_service(business_id, service):
     con = db()
     rows = execute(
         con,
-        """SELECT service,low_value,high_value
-           FROM service_pricing
-           WHERE business_id=?""",
+        """SELECT service,low_value,high_value FROM service_pricing WHERE business_id=?""",
         (business_id,)
     ).fetchall()
     con.close()
 
-    # Exact match first; then conservative containment match.
     for r in rows:
         configured = (r["service"] or "").strip().lower()
         if configured == service_norm:
             return (float(r["low_value"] or 0), float(r["high_value"] or 0))
 
+    category = _normalize_service_name(service_norm)
     for r in rows:
         configured = (r["service"] or "").strip().lower()
-        if configured and (configured in service_norm or service_norm in configured):
+        if _pricing_category(configured) == category and not _pricing_keywords(configured):
             return (float(r["low_value"] or 0), float(r["high_value"] or 0))
+
+    return (0.0, 0.0)
+
+
+def pricing_for_lead(business_id, service, message):
+    requested_category = _normalize_service_name(service)
+    message_text = (message or "").strip().lower()
+
+    con = db()
+    rows = execute(
+        con,
+        """SELECT service,low_value,high_value FROM service_pricing WHERE business_id=?""",
+        (business_id,)
+    ).fetchall()
+    con.close()
+
+    best = None
+    best_score = -1
+    generic = None
+
+    for r in rows:
+        label = (r["service"] or "").strip()
+        label_lower = label.lower()
+        category = _pricing_category(label_lower)
+        normalized_label = _normalize_service_name(label_lower)
+
+        if normalized_label in ("plumbing", "hvac", "roofing", "electrical"):
+            category = normalized_label
+
+        if category != requested_category:
+            continue
+
+        keyword_groups = _pricing_keywords(label_lower)
+
+        if not keyword_groups:
+            generic = r
+            continue
+
+        score = 0
+        matched_specific = False
+
+        for concept, variants in keyword_groups:
+            if any(v in message_text for v in variants):
+                if concept in (
+                    "sink", "faucet", "toilet", "drain", "sewer", "pipe",
+                    "garbage disposal", "water heater", "panel", "outlet",
+                    "breaker", "shingle"
+                ):
+                    score += 8
+                    matched_specific = True
+                elif concept == "replacement":
+                    score += 6
+                    matched_specific = True
+                elif concept in ("repair", "service", "leak"):
+                    score += 2
+
+        if matched_specific and score > best_score:
+            best = r
+            best_score = score
+
+    chosen = best or generic
+    if chosen:
+        return (float(chosen["low_value"] or 0), float(chosen["high_value"] or 0))
 
     return (0.0, 0.0)
 
@@ -3754,7 +3874,11 @@ def lead_value_range(row, business_id):
     if low > 0 or high > 0:
         return (low, high)
 
-    return pricing_for_service(business_id, row["service"] or "")
+    return pricing_for_lead(
+        business_id,
+        row["service"] or "",
+        row["message"] or ""
+    )
 
 
 def revenue_estimates_html(business_id=BUSINESS_ID, message=""):
@@ -3793,13 +3917,13 @@ label{{display:block;font-weight:800;margin:14px 0 6px}} input{{width:100%;paddi
 <div class="nav"><a href="/dashboard?business={business_id}">Dashboard</a><a href="/settings?business={business_id}">Settings</a><a href="/logout">Log out</a></div>
 <div class="card">
 <h1>Revenue Estimates</h1>
-<div class="sub">{html.escape(business["name"])} · Teach LeadPilot what your typical jobs are worth.</div>
+<div class="sub">{html.escape(business["name"])} · Teach LeadPilot what your typical jobs are worth. Use specific job types when possible.</div>
 {f'<div class="flash">{html.escape(message)}</div>' if message else ''}
 <div class="note"><strong>These are opportunity estimates — not customer quotes.</strong><br>
 LeadPilot uses your own typical ranges. When a job is won, the actual sold value can be recorded so the dashboard separates estimated opportunity from real won revenue.</div>
 <form method="POST" action="/revenue-estimates">
 <label>Service / job type</label>
-<input name="service" placeholder="Roof replacement" required>
+<input name="service" placeholder="Examples: Sink repair, Water heater replacement, Roof replacement" required>
 <div class="grid">
 <div><label>Typical low value</label><input name="low_value" type="number" min="0" step="1" placeholder="9000" required></div>
 <div><label>Typical high value</label><input name="high_value" type="number" min="0" step="1" placeholder="18000" required></div>
