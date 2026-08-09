@@ -767,13 +767,17 @@ def resolve_florida_location(value):
     except Exception as e:
         print("Florida location lookup error:", repr(e), flush=True)
         # Preserve the existing text matcher as a graceful fallback.
+        fallback_aliases = sorted(canonical_place_aliases(raw))
+        if zip_match:
+            fallback_aliases.extend(sorted(canonical_place_aliases(zip_match.group(0))))
+
         fallback = {
             "input": raw,
             "city": "",
             "county": "",
             "postcode": zip_match.group(0) if zip_match else "",
             "state": "Florida",
-            "aliases": [normalize_place(raw)],
+            "aliases": sorted(set(fallback_aliases)),
             "display": raw
         }
         LOCATION_CACHE[key] = fallback
@@ -792,6 +796,39 @@ def normalize_place(value):
     return " ".join(value.strip(" .?!,").split())
 
 
+def canonical_place_aliases(value):
+    norm = normalize_place(value)
+    aliases = set()
+    if not norm:
+        return aliases
+
+    aliases.add(norm)
+    if norm.endswith(" county"):
+        bare = norm[:-7].strip()
+        if bare:
+            aliases.add(bare)
+    return aliases
+
+
+def resolved_location_aliases(resolved):
+    aliases = set()
+    if not resolved:
+        return aliases
+
+    for value in [
+        resolved.get("input", ""),
+        resolved.get("city", ""),
+        resolved.get("county", ""),
+        resolved.get("postcode", ""),
+    ]:
+        aliases.update(canonical_place_aliases(value))
+
+    for value in resolved.get("aliases") or []:
+        aliases.update(canonical_place_aliases(value))
+
+    return {a for a in aliases if a}
+
+
 def business_supports_service(business, service):
     offered = [
         s.strip().lower()
@@ -804,38 +841,65 @@ def business_supports_service(business, service):
     return any(service_l in s or s in service_l for s in offered)
 
 
-def business_serves_location(business, resolved_location):
-    """Match configured business territory against resolved city/county/ZIP."""
-    if not resolved_location:
-        return False
-
-    configured_parts = [
-        normalize_place(p)
+def business_service_area_aliases(business):
+    """
+    Expand a provider's configured Florida service area into city/county/ZIP aliases.
+    """
+    raw_parts = [
+        p.strip()
         for p in re.split(r"[,;\n]+", business["service_area"] or "")
         if p.strip()
     ]
-    if not configured_parts:
+
+    aliases = set()
+
+    for part in raw_parts:
+        aliases.update(canonical_place_aliases(part))
+
+        normalized = normalize_place(part)
+        if normalized in ("florida", "statewide", "all florida", "florida statewide"):
+            aliases.add("florida statewide")
+            continue
+
+        resolved_part = resolve_florida_location(part)
+        if resolved_part:
+            aliases.update(resolved_location_aliases(resolved_part))
+
+    return {a for a in aliases if a}
+
+
+def business_serves_location(business, resolved_location):
+    """
+    Match normalized Florida geography across city, county, and ZIP relationships.
+
+    Example: a provider configured for Lake City can match Columbia County when
+    the resolver confirms Lake City belongs to Columbia County.
+    """
+    if not resolved_location:
         return False
 
-    aliases = {
-        normalize_place(a)
-        for a in (resolved_location.get("aliases") or [])
-        if normalize_place(a)
-    }
+    configured_aliases = business_service_area_aliases(business)
+    if not configured_aliases:
+        return False
 
-    for configured in configured_parts:
-        if configured in ("florida", "statewide", "all florida", "florida statewide"):
-            return True
+    if "florida statewide" in configured_aliases or "florida" in configured_aliases:
+        return True
 
-        for alias in aliases:
-            if configured == alias:
-                return True
-            if configured and alias and (
-                configured in alias or alias in configured
-            ):
-                return True
+    customer_aliases = resolved_location_aliases(resolved_location)
+    if not customer_aliases:
+        return False
+
+    if configured_aliases.intersection(customer_aliases):
+        return True
+
+    for configured in configured_aliases:
+        for customer in customer_aliases:
+            if len(configured) >= 5 and len(customer) >= 5:
+                if configured in customer or customer in configured:
+                    return True
 
     return False
+
 
 
 def _parse_utc_timestamp(value):
@@ -949,7 +1013,7 @@ def business_routing_metrics(con, business_id):
 
 def match_business_for_lead(service, location, reserve=True):
     """
-    LeadPilot Intelligent Routing V4.
+    LeadPilot Intelligent Routing V5 — normalized Florida city/county/ZIP markets.
 
     Eligibility:
       1. Marketplace routing enabled.
@@ -1152,8 +1216,67 @@ def save_coverage_waitlist(service, location, customer_zip, name, phone, email, 
     con.close()
 
 
+def reconcile_coverage_waitlist(limit=100):
+    """
+    Re-check older Waiting requests against current live provider coverage.
+    Useful after provider activation, service-area changes, or geography upgrades.
+    """
+    con = db()
+    rows = execute(
+        con,
+        """SELECT *
+           FROM coverage_waitlist
+           WHERE status='Waiting'
+           ORDER BY id
+           LIMIT ?""",
+        (limit,)
+    ).fetchall()
+    con.close()
+
+    changed = 0
+
+    for r in rows:
+        service = (r["service"] or "General Repair").strip()
+        location_value = (
+            (r["zip"] or "").strip()
+            or (r["city"] or "").strip()
+            or (r["county"] or "").strip()
+            or (r["location"] or "").strip()
+        )
+
+        if not location_value:
+            continue
+
+        matched, _resolved = match_business_for_lead(
+            service,
+            location_value,
+            reserve=False
+        )
+        if not matched:
+            continue
+
+        con = db()
+        cur = execute(
+            con,
+            """UPDATE coverage_waitlist
+               SET status='Provider Available', matched_business_id=?
+               WHERE id=? AND status='Waiting'""",
+            (int(matched["id"]), int(r["id"]))
+        )
+        con.commit()
+        if cur.rowcount:
+            changed += 1
+        con.close()
+
+    return changed
+
+
 def coverage_demand_html(message=""):
     """Admin view of unmet demand, ranked to show where provider recruiting matters most."""
+    reconciled = reconcile_coverage_waitlist(limit=100)
+    if reconciled and not message:
+        message = f"{reconciled} waiting request(s) matched to newly available coverage."
+
     con = db()
     rows = execute(con, """SELECT * FROM coverage_waitlist ORDER BY id DESC""").fetchall()
     con.close()
