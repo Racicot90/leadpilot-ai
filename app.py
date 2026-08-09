@@ -150,6 +150,19 @@ def init_db():
             )
         """)
         execute(con, """
+            CREATE TABLE IF NOT EXISTS sms_delivery_log(
+                id BIGSERIAL PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                business_id INTEGER DEFAULT 0,
+                lead_id INTEGER DEFAULT 0,
+                waitlist_id INTEGER DEFAULT 0,
+                recipient TEXT DEFAULT '',
+                message_type TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                error TEXT DEFAULT ''
+            )
+        """)
+        execute(con, """
             INSERT INTO businesses(id, name)
             VALUES(1, ?)
             ON CONFLICT (id) DO NOTHING
@@ -241,6 +254,19 @@ def init_db():
                 status TEXT DEFAULT 'Prospect',
                 notes TEXT DEFAULT '',
                 business_id INTEGER DEFAULT 0
+            )
+        """)
+        execute(con, """
+            CREATE TABLE IF NOT EXISTS sms_delivery_log(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                business_id INTEGER DEFAULT 0,
+                lead_id INTEGER DEFAULT 0,
+                waitlist_id INTEGER DEFAULT 0,
+                recipient TEXT DEFAULT '',
+                message_type TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                error TEXT DEFAULT ''
             )
         """)
         execute(con, "INSERT OR IGNORE INTO businesses(id,name) VALUES(1,?)", (BUSINESS_NAME,))
@@ -1271,6 +1297,78 @@ def reconcile_coverage_waitlist(limit=100):
     return changed
 
 
+def sms_status_html():
+    con = db()
+    rows = execute(
+        con,
+        """SELECT * FROM sms_delivery_log
+           ORDER BY id DESC
+           LIMIT 100"""
+    ).fetchall()
+    con.close()
+
+    sent = sum(1 for r in rows if (r["status"] or "") == "Sent")
+    failed = sum(1 for r in rows if (r["status"] or "") == "Failed")
+
+    cards = ""
+    for r in rows:
+        status = (r["status"] or "Unknown").strip()
+        cls = "sent" if status == "Sent" else "failed"
+        cards += f"""
+        <div class="sms-card">
+          <div class="sms-top">
+            <strong>{html.escape(r["message_type"] or "SMS")}</strong>
+            <span class="{cls}">{html.escape(status)}</span>
+          </div>
+          <div>{html.escape(r["recipient"] or "—")}</div>
+          <small>{html.escape(r["created_at"] or "")}</small>
+          {f'<div class="err">{html.escape(r["error"])}</div>' if r["error"] else ''}
+        </div>
+        """
+
+    if not cards:
+        cards = '<div class="sms-card">No SMS attempts logged yet.</div>'
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot SMS Status</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:900px;margin:auto;padding:18px}}
+.nav{{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 20px}}
+a{{color:#3448c5;font-weight:800;text-decoration:none}}
+.stats{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}}
+.stat,.sms-card{{background:#fff;border-radius:16px;padding:17px;box-shadow:0 5px 18px rgba(0,0,0,.05)}}
+.stat strong{{display:block;font-size:34px;margin-top:6px}}
+.sms-card{{margin-bottom:10px}}
+.sms-top{{display:flex;justify-content:space-between;gap:10px}}
+.sent{{color:#087443;font-weight:900}}
+.failed{{color:#b42318;font-weight:900}}
+small{{color:#667085;display:block;margin-top:5px}}
+.err{{margin-top:9px;background:#fff1f0;color:#b42318;padding:10px;border-radius:9px;font-size:12px}}
+</style>
+</head>
+<body><div class="wrap">
+<div class="nav">
+<a href="/dashboard">Dashboard</a>
+<a href="/coverage-demand">Coverage Demand</a> <a href="/sms-status">SMS Status</a>
+<a href="/recruiting">Provider Recruiting</a>
+<a href="/businesses">Businesses</a>
+<a href="/logout">Log out</a>
+</div>
+<h1>SMS Status</h1>
+<p>Beta-safe delivery log. SMS failures do not block lead creation or routing.</p>
+<div class="stats">
+<div class="stat">Sent<strong>{sent}</strong></div>
+<div class="stat">Failed<strong>{failed}</strong></div>
+</div>
+{cards}
+</div></body></html>"""
+
+
 def coverage_demand_html(message=""):
     """Admin view of unmet demand, ranked to show where provider recruiting matters most."""
     reconciled = reconcile_coverage_waitlist(limit=100)
@@ -1788,7 +1886,7 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 <div class="wrap">
 <div class="nav">
 <a href="/dashboard">Dashboard</a>
-<a href="/coverage-demand">Coverage Demand</a> <a href="/recruiting">Provider Recruiting</a>
+<a href="/coverage-demand">Coverage Demand</a> <a href="/sms-status">SMS Status</a> <a href="/recruiting">Provider Recruiting</a>
 <a href="/businesses">Businesses</a>
 <a href="/">Customer page</a>
 <a href="/logout">Log out</a>
@@ -2635,73 +2733,74 @@ def assistant_reply(message, context=None, business_id=BUSINESS_ID):
     }
 
 
-def send_twilio_body(to_phone, body):
-    """Send a raw Twilio SMS body. Returns True on success."""
-    if not all([to_phone, TWILIO_PHONE_NUMBER, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
-        return False
+def log_sms_delivery(recipient, message_type, status, error="",
+                     business_id=0, lead_id=0, waitlist_id=0):
+    try:
+        con = db()
+        execute(
+            con,
+            """INSERT INTO sms_delivery_log
+               (created_at,business_id,lead_id,waitlist_id,recipient,message_type,status,error)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                int(business_id or 0),
+                int(lead_id or 0),
+                int(waitlist_id or 0),
+                (recipient or "").strip(),
+                (message_type or "").strip(),
+                (status or "").strip(),
+                (error or "")[:1000]
+            )
+        )
+        con.commit()
+        con.close()
+    except Exception as e:
+        print("SMS log error:", repr(e), flush=True)
 
-    endpoint = (
-        f"https://api.twilio.com/2010-04-01/Accounts/"
-        f"{TWILIO_ACCOUNT_SID}/Messages.json"
-    )
 
-    payload = urlencode({
-        "To": to_phone,
-        "From": TWILIO_PHONE_NUMBER,
-        "Body": body
-    }).encode()
-
-    import base64
-    token = base64.b64encode(
-        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
-    ).decode()
-
-    req = Request(
-        endpoint,
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Basic {token}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-    )
+def send_twilio_body(to_phone, body, return_error=False):
+    """
+    Beta-safe Twilio sender.
+    Never raises into the user flow. Returns False on failure, or (ok,error)
+    when return_error=True.
+    """
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_FROM_NUMBER:
+        err = "Twilio is not fully configured."
+        print("Twilio skipped:", err, flush=True)
+        return (False, err) if return_error else False
 
     try:
-        with urlopen(req, timeout=15) as resp:
-            return 200 <= getattr(resp, "status", 0) < 300
+        import urllib.parse
+        import urllib.request
+        import base64
+
+        url = (
+            f"https://api.twilio.com/2010-04-01/Accounts/"
+            f"{TWILIO_ACCOUNT_SID}/Messages.json"
+        )
+        payload = urllib.parse.urlencode({
+            "To": to_phone,
+            "From": TWILIO_FROM_NUMBER,
+            "Body": body,
+        }).encode()
+
+        req = urllib.request.Request(url, data=payload, method="POST")
+        token = base64.b64encode(
+            f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
+        ).decode()
+        req.add_header("Authorization", f"Basic {token}")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            resp.read()
+
+        return (True, "") if return_error else True
+
     except Exception as e:
-        detail = ""
-        try:
-            if hasattr(e, "read"):
-                detail = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-
-        # Trial accounts may only allow predefined bodies.
-        if "572006" in detail:
-            try:
-                payload = urlencode({
-                    "To": to_phone,
-                    "From": TWILIO_PHONE_NUMBER,
-                    "Body": "sms_internal_alerts"
-                }).encode()
-                req = Request(
-                    endpoint,
-                    data=payload,
-                    method="POST",
-                    headers={
-                        "Authorization": f"Basic {token}",
-                        "Content-Type": "application/x-www-form-urlencoded"
-                    }
-                )
-                with urlopen(req, timeout=15) as resp:
-                    return 200 <= getattr(resp, "status", 0) < 300
-            except Exception as e2:
-                print("Twilio fallback chase error:", repr(e2), flush=True)
-                return False
-
-        print("Twilio chase error:", repr(e), detail[:600], flush=True)
-        return False
+        err = str(e)
+        print("Twilio send failed:", repr(e), flush=True)
+        return (False, err) if return_error else False
 
 
 def notify_waitlist_customer(waitlist_id):
@@ -2742,8 +2841,17 @@ def notify_waitlist_customer(waitlist_id):
            else "Return to LeadPilot to submit your request.")
     )
 
-    if not send_twilio_body(phone, body):
-        return False, "SMS could not be sent."
+    ok, err = send_twilio_body(phone, body, return_error=True)
+    log_sms_delivery(
+        phone,
+        "coverage_available",
+        "Sent" if ok else "Failed",
+        err,
+        business_id=business_id,
+        waitlist_id=waitlist_id
+    )
+    if not ok:
+        return False, "SMS failed. Customer remains in Ready to notify."
 
     con = db()
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
@@ -2878,7 +2986,15 @@ def send_new_lead_sms(lead_id, name, phone, service, urgency, message,
     if dashboard_url:
         body += f"\\nDashboard: {dashboard_url}"
 
-    ok = send_twilio_body(alert_phone, body)
+    ok, err = send_twilio_body(alert_phone, body, return_error=True)
+    log_sms_delivery(
+        alert_phone,
+        "provider_new_lead",
+        "Sent" if ok else "Failed",
+        err,
+        business_id=business_id,
+        lead_id=lead_id
+    )
     print(
         "Provider new-lead SMS:",
         "sent" if ok else "failed",
@@ -3682,7 +3798,7 @@ h1{{font-size:28px;margin:0}}
 
 <div class="toplinks">
 <a href="/b/{business_id}">Customer page</a>
-<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a> <a href="/coverage-demand">Coverage Demand</a>
+<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a> <a href="/coverage-demand">Coverage Demand</a> <a href="/sms-status">SMS Status</a>
 <a href="/logout">Log out</a>
 </div>
 </header>
@@ -3822,6 +3938,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/login")
                 return
             self.send_bytes(coverage_demand_html(message=query.get("message", [""])[0]).encode())
+
+        elif p == "/sms-status":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+            self.send_bytes(sms_status_html().encode())
 
         elif p == "/recruiting":
             if not logged_in(self.headers):
