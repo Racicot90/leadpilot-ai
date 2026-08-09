@@ -4217,9 +4217,6 @@ def dashboard_html(business_id=BUSINESS_ID):
             overdue_opp_high += high
             attention_rows.append((lead_score_for_sort(r), wait_minutes, r, low, high, followup_text))
 
-    # Strongest / most urgent leads first in the attention queue.
-    attention_rows.sort(key=lambda x: (x[0], x[1]), reverse=True)
-
     # Today's single best lead to work first.
     priority_candidates = []
     for r in rows:
@@ -4229,6 +4226,35 @@ def dashboard_html(business_id=BUSINESS_ID):
 
     priority_candidates.sort(key=lambda x: x[0], reverse=True)
     priority_row = priority_candidates[0][1] if priority_candidates else None
+    priority_id = priority_row["id"] if priority_row else None
+
+    # Needs Attention now uses the exact same revenue-weighted ranking system
+    # as #1 Priority Today. The #1 lead is excluded so the owner gets a true
+    # next-action queue instead of seeing the same customer twice.
+    ranked_attention = []
+    for r in rows:
+        raw_status = (r["status"] or "New").strip()
+        status = {"Booked":"Estimate", "Closed":"Won"}.get(raw_status, raw_status)
+        followup_class, followup_text, wait_minutes, is_overdue = lead_followup_status(r)
+
+        if (
+            is_overdue
+            and status in ("New", "Contacted", "Estimate")
+            and r["id"] != priority_id
+        ):
+            low, high = lead_value_range(r, business_id)
+            ranked_attention.append(
+                (
+                    priority_rank(r, business_id),
+                    r,
+                    low,
+                    high,
+                    followup_text,
+                    wait_minutes,
+                )
+            )
+
+    ranked_attention.sort(key=lambda x: x[0], reverse=True)
 
     conversion_rate = (won_count / completed_count * 100.0) if completed_count else 0.0
     average_won = (won_revenue / won_count) if won_count else 0.0
@@ -4289,18 +4315,21 @@ def dashboard_html(business_id=BUSINESS_ID):
     # Needs Attention panel
     # -------------------------------
     attention_html = ""
-    for _score, wait_minutes, r, low, high, followup_text in attention_rows[:5]:
+    for queue_index, (_rank, r, low, high, followup_text, wait_minutes) in enumerate(ranked_attention[:5], start=2):
         phone = (r["phone"] or "").strip()
         value_text = (
             f"{money(low)}–{money(high)}"
             if (low > 0 or high > 0)
             else "Value not set"
         )
+        queue_reason = priority_reason(r, business_id)
+
         attention_html += f"""
         <div class="attention-lead">
           <div>
-            <div class="attn-name">{html.escape(r['name'] or 'Unnamed lead')}</div>
+            <div class="attn-name"><span class="queue-rank">#{queue_index}</span> {html.escape(r['name'] or 'Unnamed lead')}</div>
             <div class="attn-meta">{html.escape(r['service'] or 'General Repair')} · {html.escape(r['zip'] or 'Location not provided')}</div>
+            <div class="attn-priority">Why: {html.escape(queue_reason)}</div>
             <div class="attn-reason">{html.escape(followup_text)}</div>
           </div>
           <div class="attn-value">
@@ -4311,7 +4340,7 @@ def dashboard_html(business_id=BUSINESS_ID):
         </div>"""
 
     if not attention_html:
-        attention_html = '<div class="attention-empty">No overdue leads right now. Your open pipeline is caught up.</div>'
+        attention_html = '<div class="attention-empty">No additional overdue leads right now. Work the #1 Priority lead first.</div>'
 
     # -------------------------------
     # Lead cards
@@ -4451,6 +4480,8 @@ h1{{font-size:30px;margin:0}}
 .attention-lead{{display:flex;justify-content:space-between;gap:14px;padding:13px 0;border-top:1px solid #eaecf0}}
 .attn-name{{font-weight:800;font-size:16px}}
 .attn-meta,.attn-reason{{font-size:12px;color:#667085;margin-top:4px}}
+.attn-priority{{font-size:12px;color:#344054;margin-top:5px;font-weight:700}}
+.queue-rank{{display:inline-block;background:#172033;color:#fff;border-radius:999px;padding:3px 7px;font-size:11px;vertical-align:2px}}
 .attn-reason{{color:#b42318;font-weight:700}}
 .attn-value{{text-align:right;min-width:130px}}
 .attn-value span{{font-size:10px;text-transform:uppercase;color:#667085}}
@@ -4588,7 +4619,7 @@ h1{{font-size:30px;margin:0}}
 <div class="attention">
   <div class="attention-title">
     <h2>Needs Attention</h2>
-    <span>Highest-value overdue opportunities first</span>
+    <span>Next-best opportunities after #1 Priority</span>
   </div>
   {attention_html}
 </div>
