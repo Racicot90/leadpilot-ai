@@ -4000,8 +4000,20 @@ def lead_score_for_sort(row):
 
 
 def priority_rank(row, business_id):
+    """
+    Revenue-weighted priority score.
+
+    Goal: rank the lead with the best combination of:
+    1. Dollar opportunity
+    2. Qualification / likelihood to close
+    3. Urgency
+    4. Response-time pressure
+    5. Pipeline stage
+
+    Revenue is intentionally the strongest single factor, but a weak,
+    low-quality large job will not automatically beat a strong, urgent lead.
+    """
     low, high = lead_value_range(row, business_id)
-    midpoint = ((low or 0) + (high or 0)) / 2.0
 
     raw_status = (row["status"] or "New").strip()
     status = {"Booked":"Estimate", "Closed":"Won"}.get(raw_status, raw_status)
@@ -4010,35 +4022,97 @@ def priority_rank(row, business_id):
         return -1
 
     try:
-        lead_score = int(row["lead_score"] or 0)
+        lead_score = max(0, min(int(row["lead_score"] or 0), 100))
     except Exception:
         lead_score = 0
 
     _, _, wait_minutes, is_overdue = lead_followup_status(row)
     urgency = (row["urgency"] or "Normal").strip().lower()
 
-    rank = float(lead_score)
+    # -----------------------------
+    # 1) Revenue score — max 100
+    # -----------------------------
+    # Use a conservative weighted value instead of the high estimate alone:
+    # 60% low end + 40% high end.
+    # This keeps the ranking grounded while still rewarding upside.
+    expected_value = ((low or 0) * 0.60) + ((high or 0) * 0.40)
 
-    # Opportunity value matters, but don't let a single very large estimate
-    # completely overwhelm qualification and urgency.
-    if midpoint > 0:
-        rank += min(midpoint / 500.0, 40)
+    # Revenue bands deliberately rise quickly for larger jobs.
+    if expected_value >= 15000:
+        revenue_score = 100
+    elif expected_value >= 10000:
+        revenue_score = 92
+    elif expected_value >= 7500:
+        revenue_score = 84
+    elif expected_value >= 5000:
+        revenue_score = 74
+    elif expected_value >= 3000:
+        revenue_score = 62
+    elif expected_value >= 1500:
+        revenue_score = 48
+    elif expected_value >= 750:
+        revenue_score = 34
+    elif expected_value >= 300:
+        revenue_score = 20
+    elif expected_value > 0:
+        revenue_score = 10
+    else:
+        revenue_score = 0
 
-    if is_overdue:
-        rank += 22
+    # -----------------------------
+    # 2) Qualification — max 100
+    # -----------------------------
+    qualification_score = lead_score
 
-    if wait_minutes >= 60:
-        rank += min(wait_minutes / 60.0, 18)
-
+    # -----------------------------
+    # 3) Urgency — max 100
+    # -----------------------------
     if urgency == "emergency":
-        rank += 25
+        urgency_score = 100
     elif urgency == "high":
-        rank += 15
+        urgency_score = 75
+    else:
+        urgency_score = 25
 
-    if status == "New":
-        rank += 8
-    elif status == "Contacted":
-        rank += 3
+    # -----------------------------
+    # 4) Response pressure — max 100
+    # -----------------------------
+    hours_waiting = max(wait_minutes, 0) / 60.0
+    if is_overdue and hours_waiting >= 24:
+        response_score = 100
+    elif is_overdue:
+        response_score = 85
+    elif hours_waiting >= 4:
+        response_score = 65
+    elif hours_waiting >= 1:
+        response_score = 45
+    elif hours_waiting >= 0.5:
+        response_score = 30
+    else:
+        response_score = 15
+
+    # -----------------------------
+    # 5) Pipeline stage — max 100
+    # -----------------------------
+    stage_score = {
+        "New": 100,
+        "Contacted": 60,
+        "Estimate": 45,
+    }.get(status, 0)
+
+    # Revenue is the strongest component.
+    rank = (
+        revenue_score * 0.45 +
+        qualification_score * 0.25 +
+        urgency_score * 0.15 +
+        response_score * 0.10 +
+        stage_score * 0.05
+    )
+
+    # Small emergency work can still rise, but not simply overpower a
+    # substantially larger qualified opportunity.
+    if urgency == "emergency":
+        rank += 6
 
     return rank
 
@@ -4055,20 +4129,28 @@ def priority_reason(row, business_id):
     _, _, wait_minutes, is_overdue = lead_followup_status(row)
     urgency = (row["urgency"] or "Normal").strip().lower()
 
-    if low > 0 or high > 0:
-        reasons.append("high-value opportunity" if high >= 5000 else "revenue opportunity")
+    expected_value = ((low or 0) * 0.60) + ((high or 0) * 0.40)
 
-    if score >= 80:
+    if expected_value >= 5000:
+        reasons.append("high-dollar opportunity")
+    elif expected_value >= 750:
+        reasons.append("strong revenue opportunity")
+    elif expected_value > 0:
+        reasons.append("revenue opportunity")
+
+    if score >= 85:
         reasons.append("strong lead score")
     elif score >= 65:
         reasons.append("qualified lead")
 
-    if urgency in ("high", "emergency"):
+    if urgency == "emergency":
+        reasons.append("emergency")
+    elif urgency == "high":
         reasons.append("high urgency")
 
     if is_overdue:
         reasons.append("overdue follow-up")
-    elif wait_minutes >= 30:
+    elif wait_minutes >= 60:
         reasons.append("waiting customer")
 
     if not reasons:
@@ -4188,7 +4270,7 @@ def dashboard_html(business_id=BUSINESS_ID):
           <div class="priority-facts">
             <div><span>Lead score</span><strong>{p_score}/100</strong></div>
             <div><span>Waiting</span><strong>{p_wait}</strong></div>
-            <div><span>Status</span><strong>{"Overdue" if p_overdue else "Open"}</strong></div>
+            <div><span>Status</span><strong>{"🚨 OVERDUE" if p_overdue else "Open"}</strong></div>
           </div>
 
           <a class="priority-call" href="tel:{html.escape(p_phone, quote=True)}">📞 CALL THIS LEAD NOW</a>
