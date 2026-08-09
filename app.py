@@ -424,7 +424,7 @@ def save_business_settings(name, services, service_area, email, alert_phone,
            WHERE id=?""",
         (
             (name or BUSINESS_NAME).strip(), (services or "").strip(),
-            (service_area or "").strip(), (email or "").strip(), (alert_phone or "").strip(),
+            (service_area or "").strip(), (email or "").strip(), normalize_phone(alert_phone),
             1 if str(routing_enabled) in ("1","true","on","yes") else 0,
             max(0,min(int(routing_priority or 0),2)), max(0,int(daily_lead_cap or 0)),
             verification_status if verification_status in ("Pending","Verified","Rejected","Expired") else "Pending",
@@ -626,7 +626,7 @@ def create_business(name, services="", service_area="", email="", alert_phone=""
             (services or "").strip(),
             (service_area or "").strip(),
             (email or "").strip(),
-            (alert_phone or "").strip(),
+            normalize_phone(alert_phone),
             1 if routing_enabled else 0, 0, 0, "", "",
             verification_status if verification_status in ("Pending","Verified","Rejected","Expired") else "Pending",
             1 if test_business else 0
@@ -766,7 +766,10 @@ def resolve_florida_location(value):
         state = (address.get("state") or "Florida").strip()
 
         aliases = set()
-        for item in [raw, city, county, postcode, state]:
+        # IMPORTANT: Do NOT add the state ("Florida") to city/county/ZIP aliases.
+        # Every Florida location shares that state token, which would make a
+        # Miami-only provider appear to serve Lake City, Tampa, Orlando, etc.
+        for item in [raw, city, county, postcode]:
             normalized = normalize_place(item)
             if normalized:
                 aliases.add(normalized)
@@ -855,51 +858,95 @@ def resolved_location_aliases(resolved):
     return {a for a in aliases if a}
 
 
+def _normalize_service_name(value):
+    s = (value or "").strip().lower()
+    aliases = {
+        "hvac repair": "hvac",
+        "air conditioning": "hvac",
+        "air conditioner": "hvac",
+        "ac repair": "hvac",
+        "a/c": "hvac",
+        "plumber": "plumbing",
+        "plumbing repair": "plumbing",
+        "roofer": "roofing",
+        "roof repair": "roofing",
+        "electrician": "electrical",
+        "electrical repair": "electrical",
+    }
+    return aliases.get(s, s)
+
+
 def business_supports_service(business, service):
-    offered = [
-        s.strip().lower()
-        for s in (business["services"] or "").split(",")
+    raw = ""
+    try:
+        raw = business.get("services", "") or ""
+    except AttributeError:
+        raw = business["services"] or ""
+
+    offered = {
+        _normalize_service_name(s)
+        for s in raw.split(",")
         if s.strip()
-    ]
-    service_l = (service or "").strip().lower()
-    if not offered or not service_l or service_l == "general repair":
+    }
+    requested = _normalize_service_name(service)
+
+    if not offered or not requested or requested == "general repair":
         return False
-    return any(service_l in s or s in service_l for s in offered)
+
+    return requested in offered
 
 
 def business_service_area_aliases(business):
     """
-    Expand a provider's configured Florida service area into city/county/ZIP aliases.
+    Expand each explicitly configured Florida service-area token into safe
+    city/county/ZIP aliases.
+
+    "Florida" is treated as statewide ONLY when the business owner explicitly
+    entered Florida/statewide in Service area.
     """
+    service_area = ""
+    try:
+        service_area = business.get("service_area", "") or ""
+    except AttributeError:
+        service_area = business["service_area"] or ""
+
     raw_parts = [
         p.strip()
-        for p in re.split(r"[,;\n]+", business["service_area"] or "")
+        for p in re.split(r"[,;\n]+", service_area)
         if p.strip()
     ]
 
     aliases = set()
 
     for part in raw_parts:
-        aliases.update(canonical_place_aliases(part))
-
         normalized = normalize_place(part)
+
+        # Explicit statewide opt-in only.
         if normalized in ("florida", "statewide", "all florida", "florida statewide"):
             aliases.add("florida statewide")
             continue
 
+        aliases.update(canonical_place_aliases(part))
+
         resolved_part = resolve_florida_location(part)
         if resolved_part:
+            # resolved_location_aliases intentionally excludes the state token.
             aliases.update(resolved_location_aliases(resolved_part))
 
+    # Never allow a generic "florida" token to leak in from geocoding.
+    aliases.discard("florida")
     return {a for a in aliases if a}
 
 
 def business_serves_location(business, resolved_location):
     """
-    Match normalized Florida geography across city, county, and ZIP relationships.
+    Strict geographic eligibility.
 
-    Example: a provider configured for Lake City can match Columbia County when
-    the resolver confirms Lake City belongs to Columbia County.
+    Rules:
+      - Explicit "Florida"/statewide configuration matches anywhere in Florida.
+      - Otherwise, provider and customer must share a canonical city, county,
+        or ZIP alias.
+      - No fuzzy substring fallback.
     """
     if not resolved_location:
         return False
@@ -908,23 +955,16 @@ def business_serves_location(business, resolved_location):
     if not configured_aliases:
         return False
 
-    if "florida statewide" in configured_aliases or "florida" in configured_aliases:
+    if "florida statewide" in configured_aliases:
         return True
 
     customer_aliases = resolved_location_aliases(resolved_location)
+    customer_aliases.discard("florida")
+
     if not customer_aliases:
         return False
 
-    if configured_aliases.intersection(customer_aliases):
-        return True
-
-    for configured in configured_aliases:
-        for customer in customer_aliases:
-            if len(configured) >= 5 and len(customer) >= 5:
-                if configured in customer or customer in configured:
-                    return True
-
-    return False
+    return bool(configured_aliases.intersection(customer_aliases))
 
 
 
@@ -1039,7 +1079,7 @@ def business_routing_metrics(con, business_id):
 
 def match_business_for_lead(service, location, reserve=True):
     """
-    LeadPilot Intelligent Routing V5 — normalized Florida city/county/ZIP markets.
+    LeadPilot Intelligent Routing V7 — strict service + canonical Florida territory matching.
 
     Eligibility:
       1. Marketplace routing enabled.
@@ -1234,7 +1274,7 @@ def save_coverage_waitlist(service, location, customer_zip, name, phone, email, 
             now,
             (service or "General Repair").strip(),
             (location or "").strip(), city, county, postcode,
-            (name or "").strip(), (phone or "").strip(),
+            (name or "").strip(), normalize_phone(phone),
             (email or "").strip(), (issue or "").strip(), "Waiting"
         )
     )
@@ -1242,17 +1282,19 @@ def save_coverage_waitlist(service, location, customer_zip, name, phone, email, 
     con.close()
 
 
-def reconcile_coverage_waitlist(limit=100):
+def reconcile_coverage_waitlist(limit=200):
     """
-    Re-check older Waiting requests against current live provider coverage.
-    Useful after provider activation, service-area changes, or geography upgrades.
+    Revalidate both Waiting and Provider Available records using current strict
+    service + geography rules.
+
+    This repairs historical bad matches created by older routing logic.
     """
     con = db()
     rows = execute(
         con,
         """SELECT *
            FROM coverage_waitlist
-           WHERE status='Waiting'
+           WHERE status IN ('Waiting','Provider Available')
            ORDER BY id
            LIMIT ?""",
         (limit,)
@@ -1263,13 +1305,15 @@ def reconcile_coverage_waitlist(limit=100):
 
     for r in rows:
         service = (r["service"] or "General Repair").strip()
+
+        # Prefer the original human-entered location/city/county before ZIP.
+        # All resolve to canonical aliases under the strict matcher.
         location_value = (
-            (r["zip"] or "").strip()
+            (r["location"] or "").strip()
             or (r["city"] or "").strip()
             or (r["county"] or "").strip()
-            or (r["location"] or "").strip()
+            or (r["zip"] or "").strip()
         )
-
         if not location_value:
             continue
 
@@ -1278,23 +1322,44 @@ def reconcile_coverage_waitlist(limit=100):
             location_value,
             reserve=False
         )
+
+        current_status = (r["status"] or "Waiting").strip()
+        current_business_id = int(r["matched_business_id"] or 0)
+
+        # No valid provider now: bad/expired old match returns to Waiting.
         if not matched:
+            if current_status == "Provider Available":
+                con = db()
+                cur = execute(
+                    con,
+                    """UPDATE coverage_waitlist
+                       SET status='Waiting', matched_business_id=0
+                       WHERE id=?""",
+                    (int(r["id"]),)
+                )
+                con.commit()
+                changed += int(bool(cur.rowcount))
+                con.close()
             continue
 
-        con = db()
-        cur = execute(
-            con,
-            """UPDATE coverage_waitlist
-               SET status='Provider Available', matched_business_id=?
-               WHERE id=? AND status='Waiting'""",
-            (int(matched["id"]), int(r["id"]))
-        )
-        con.commit()
-        if cur.rowcount:
-            changed += 1
-        con.close()
+        new_business_id = int(matched["id"])
+
+        # Valid provider exists: mark/repair the match.
+        if current_status != "Provider Available" or current_business_id != new_business_id:
+            con = db()
+            cur = execute(
+                con,
+                """UPDATE coverage_waitlist
+                   SET status='Provider Available', matched_business_id=?
+                   WHERE id=?""",
+                (new_business_id, int(r["id"]))
+            )
+            con.commit()
+            changed += int(bool(cur.rowcount))
+            con.close()
 
     return changed
+
 
 
 def sms_status_html():
@@ -1441,7 +1506,7 @@ def coverage_demand_html(message=""):
     request_rows = ""
     for r in rows[:100]:
         place = (r["county"] or r["city"] or r["location"] or "—").strip()
-        contact = (r["phone"] or r["email"] or "—").strip()
+        contact = (display_phone(r["phone"]) if (r["phone"] or "").strip() else (r["email"] or "—").strip())
         status = (r["status"] or "Waiting").strip()
         business_id = int(r["matched_business_id"] or 0) if "matched_business_id" in r.keys() else 0
         provider_name = ""
@@ -2466,17 +2531,51 @@ def qualify_lead(name, phone, email, zip_code, service, urgency, message):
 
     return {"lead_score": score, "qualification": qualification, "recommended_action": action}
 
-def _clean_phone(value):
-    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+def normalize_phone(value):
+    """
+    Normalize US phone numbers to E.164 for database storage and Twilio.
+    Examples:
+      9048061012       -> +19048061012
+      904-806-1012     -> +19048061012
+      (904) 806-1012   -> +19048061012
+      +19048061012     -> +19048061012
+    """
+    raw = (value or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if raw.startswith("+") and 8 <= len(digits) <= 15:
+        return "+" + digits
+    return ""
+
+
+def display_phone(value):
+    """Pretty display only; never use this value for Twilio."""
+    e164 = normalize_phone(value)
+    digits = "".join(ch for ch in e164 if ch.isdigit())
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]
-    return digits
-
-def _extract_phone(value):
-    digits = _clean_phone(value)
     if len(digits) == 10:
         return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
-    return ""
+    return value or ""
+
+
+def _clean_phone(value):
+    normalized = normalize_phone(value)
+    digits = "".join(ch for ch in normalized if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits
+
+
+def _extract_phone(value):
+    # Conversation state/database keeps E.164, not pretty formatting.
+    return normalize_phone(value)
+
+
 
 def _extract_email(value):
     for token in (value or "").replace(",", " ").split():
@@ -2779,9 +2878,16 @@ def send_twilio_body(to_phone, body, return_error=False):
             f"https://api.twilio.com/2010-04-01/Accounts/"
             f"{TWILIO_ACCOUNT_SID}/Messages.json"
         )
+        normalized_to = normalize_phone(to_phone)
+        normalized_from = normalize_phone(TWILIO_PHONE_NUMBER)
+
+        if not normalized_to:
+            err = "Recipient phone number is invalid."
+            return (False, err) if return_error else False
+
         payload = urllib.parse.urlencode({
-            "To": to_phone,
-            "From": TWILIO_PHONE_NUMBER,
+            "To": normalized_to,
+            "From": normalized_from or TWILIO_PHONE_NUMBER,
             "Body": body,
         }).encode()
 
