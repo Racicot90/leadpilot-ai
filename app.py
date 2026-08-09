@@ -4217,6 +4217,24 @@ class Handler(BaseHTTPRequestHandler):
         parsed = parse_qs(raw)
         return {k: v[0] for k, v in parsed.items()}
 
+    def read_request_data(self):
+        """Read either JSON API payloads or standard HTML form submissions."""
+        content_type = (self.headers.get("Content-Type", "") or "").lower()
+        n = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(n) if n else b""
+
+        if "application/json" in content_type:
+            try:
+                return json.loads(raw or b"{}")
+            except Exception:
+                return {}
+
+        try:
+            parsed = parse_qs(raw.decode())
+            return {k: v[0] for k, v in parsed.items()}
+        except Exception:
+            return {}
+
     def do_POST(self):
         parsed_url = urlparse(self.path)
         p = parsed_url.path
@@ -4389,7 +4407,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(f"/settings?business={business_id}&saved=1")
                 return
 
-            data = self.read_json()
+            data = self.read_request_data()
 
             if p == "/api/chat":
                 marketplace_mode = bool(data.get("marketplace_mode"))
@@ -4568,16 +4586,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_bytes(b"Service required and high value must be >= low value", 400)
                     return
                 con = db()
-                if USE_POSTGRES:
-                    execute(con, """INSERT INTO service_pricing(business_id,service,low_value,high_value)
-                                    VALUES(?,?,?,?)
-                                    ON CONFLICT (business_id,service)
-                                    DO UPDATE SET low_value=EXCLUDED.low_value, high_value=EXCLUDED.high_value""",
-                            (business_id, service, low, high))
-                else:
-                    execute(con, """INSERT OR REPLACE INTO service_pricing(business_id,service,low_value,high_value)
-                                    VALUES(?,?,?,?)""", (business_id, service, low, high))
-                con.commit(); con.close()
+                try:
+                    if USE_POSTGRES:
+                        execute(con, """INSERT INTO service_pricing(business_id,service,low_value,high_value)
+                                        VALUES(?,?,?,?)
+                                        ON CONFLICT (business_id,service)
+                                        DO UPDATE SET low_value=EXCLUDED.low_value, high_value=EXCLUDED.high_value""",
+                                (business_id, service, low, high))
+                    else:
+                        execute(con, """INSERT OR REPLACE INTO service_pricing(business_id,service,low_value,high_value)
+                                        VALUES(?,?,?,?)""", (business_id, service, low, high))
+                    con.commit()
+                finally:
+                    con.close()
                 self.redirect(f"/revenue-estimates?business={business_id}&message=Estimate%20range%20saved")
                 return
 
