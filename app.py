@@ -364,6 +364,34 @@ def init_db():
             except Exception:
                 pass
 
+    # V9 — contractor lead pipeline + opportunity value
+    try:
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS estimated_value_low REAL DEFAULT 0")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS estimated_value_high REAL DEFAULT 0")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS final_job_value REAL DEFAULT 0")
+        execute(con, "ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome_note TEXT DEFAULT ''")
+    except Exception:
+        for stmt in [
+            "ALTER TABLE leads ADD COLUMN estimated_value_low REAL DEFAULT 0",
+            "ALTER TABLE leads ADD COLUMN estimated_value_high REAL DEFAULT 0",
+            "ALTER TABLE leads ADD COLUMN final_job_value REAL DEFAULT 0",
+            "ALTER TABLE leads ADD COLUMN outcome_note TEXT DEFAULT ''"
+        ]:
+            try:
+                execute(con, stmt)
+            except Exception:
+                pass
+
+    execute(con, """
+        CREATE TABLE IF NOT EXISTS service_pricing(
+            business_id INTEGER NOT NULL,
+            service TEXT NOT NULL,
+            low_value REAL DEFAULT 0,
+            high_value REAL DEFAULT 0,
+            PRIMARY KEY (business_id, service)
+        )
+    """)
+
     con.commit()
     con.close()
 
@@ -3668,6 +3696,121 @@ def format_wait_time(minutes):
     return f"{days}d {rem_hours}h" if rem_hours else f"{days}d"
 
 
+def money(value):
+    try:
+        value = float(value or 0)
+    except Exception:
+        value = 0
+    return "${:,.0f}".format(value)
+
+
+def get_service_pricing(business_id):
+    con = db()
+    rows = execute(
+        con,
+        """SELECT service,low_value,high_value
+           FROM service_pricing
+           WHERE business_id=?
+           ORDER BY service""",
+        (business_id,)
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def pricing_for_service(business_id, service):
+    service_norm = (service or "").strip().lower()
+    if not service_norm:
+        return (0.0, 0.0)
+
+    con = db()
+    rows = execute(
+        con,
+        """SELECT service,low_value,high_value
+           FROM service_pricing
+           WHERE business_id=?""",
+        (business_id,)
+    ).fetchall()
+    con.close()
+
+    # Exact match first; then conservative containment match.
+    for r in rows:
+        configured = (r["service"] or "").strip().lower()
+        if configured == service_norm:
+            return (float(r["low_value"] or 0), float(r["high_value"] or 0))
+
+    for r in rows:
+        configured = (r["service"] or "").strip().lower()
+        if configured and (configured in service_norm or service_norm in configured):
+            return (float(r["low_value"] or 0), float(r["high_value"] or 0))
+
+    return (0.0, 0.0)
+
+
+def lead_value_range(row, business_id):
+    low = float(row["estimated_value_low"] or 0) if "estimated_value_low" in row.keys() else 0
+    high = float(row["estimated_value_high"] or 0) if "estimated_value_high" in row.keys() else 0
+
+    if low > 0 or high > 0:
+        return (low, high)
+
+    return pricing_for_service(business_id, row["service"] or "")
+
+
+def revenue_estimates_html(business_id=BUSINESS_ID, message=""):
+    business = get_business_settings(business_id)
+    pricing = get_service_pricing(business_id)
+
+    rows = ""
+    for p in pricing:
+        service = html.escape(p["service"] or "")
+        rows += f"""
+        <div class="price-row">
+          <div><strong>{service}</strong><span>{money(p["low_value"])}–{money(p["high_value"])}</span></div>
+          <form method="POST" action="/revenue-estimates/delete">
+            <input type="hidden" name="business_id" value="{business_id}">
+            <input type="hidden" name="service" value="{html.escape(p["service"] or "", quote=True)}">
+            <button class="delete">Remove</button>
+          </form>
+        </div>"""
+
+    return f"""<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeadPilot Revenue Estimates</title>
+<style>
+*{{box-sizing:border-box}} body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:720px;margin:auto;padding:18px}} .nav{{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}}
+.nav a{{font-weight:800;color:#3448c5;text-decoration:none}} .card{{background:#fff;border-radius:20px;padding:22px;box-shadow:0 8px 28px rgba(0,0,0,.07);margin-bottom:16px}}
+h1{{margin:0 0 6px;font-size:30px}} h2{{margin-top:0}} .sub,.hint{{color:#667085;line-height:1.45}}
+label{{display:block;font-weight:800;margin:14px 0 6px}} input{{width:100%;padding:13px;border:1px solid #d0d5dd;border-radius:10px;font-size:16px}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px}} button{{border:0;border-radius:10px;padding:13px 16px;background:#172033;color:#fff;font-weight:800;font-size:15px}}
+.flash{{background:#dcfae6;color:#05603a;padding:12px;border-radius:10px;font-weight:800;margin:12px 0}}
+.price-row{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid #eaecf0}}
+.price-row span{{display:block;color:#667085;margin-top:4px}} .delete{{background:#fff;color:#b42318;border:1px solid #fecdca;padding:9px 12px}}
+.note{{background:#eef4ff;border-radius:12px;padding:14px;color:#344054;line-height:1.45}}
+@media(max-width:560px){{.grid{{grid-template-columns:1fr}}}}
+</style></head><body><div class="wrap">
+<div class="nav"><a href="/dashboard?business={business_id}">Dashboard</a><a href="/settings?business={business_id}">Settings</a><a href="/logout">Log out</a></div>
+<div class="card">
+<h1>Revenue Estimates</h1>
+<div class="sub">{html.escape(business["name"])} · Teach LeadPilot what your typical jobs are worth.</div>
+{f'<div class="flash">{html.escape(message)}</div>' if message else ''}
+<div class="note"><strong>These are opportunity estimates — not customer quotes.</strong><br>
+LeadPilot uses your own typical ranges. When a job is won, the actual sold value can be recorded so the dashboard separates estimated opportunity from real won revenue.</div>
+<form method="POST" action="/revenue-estimates">
+<label>Service / job type</label>
+<input name="service" placeholder="Roof replacement" required>
+<div class="grid">
+<div><label>Typical low value</label><input name="low_value" type="number" min="0" step="1" placeholder="9000" required></div>
+<div><label>Typical high value</label><input name="high_value" type="number" min="0" step="1" placeholder="18000" required></div>
+</div>
+<input type="hidden" name="business_id" value="{business_id}">
+<button style="margin-top:16px">Save estimate range</button>
+</form></div>
+<div class="card"><h2>Configured job values</h2>
+{rows or '<div class="hint">No ranges yet. Add the first service above.</div>'}
+</div></div></body></html>"""
+
 def lead_followup_status(row):
     """Timer-aware follow-up recommendation for the dashboard."""
     status = (row["status"] or "New").strip()
@@ -3675,10 +3818,10 @@ def lead_followup_status(row):
     qualification = (row["qualification"] or "Standard").strip()
     wait_minutes = lead_wait_minutes(row)
 
-    if status == "Closed":
-        return ("done", "Closed — no follow-up needed", wait_minutes, False)
-    if status == "Booked":
-        return ("booked", "Booked — customer is scheduled", wait_minutes, False)
+    if status in ("Won", "Lost", "Closed"):
+        return ("done", f"{status} — no follow-up needed", wait_minutes, False)
+    if status in ("Estimate", "Booked"):
+        return ("booked", "Estimate stage — customer is being worked", wait_minutes, False)
     if status == "Contacted":
         return ("contacted", "Contacted — continue follow-up as needed", wait_minutes, False)
 
@@ -3726,300 +3869,195 @@ def lead_followup_status(row):
 def dashboard_html(business_id=BUSINESS_ID):
     business = get_business_settings(business_id)
     con = db()
-
     rows = execute(
         con,
         """SELECT * FROM leads
            WHERE business_id=?
-           ORDER BY lead_score DESC, id DESC""",
+           ORDER BY CASE WHEN status='New' THEN 0 ELSE 1 END, lead_score DESC, id DESC""",
         (business_id,)
     ).fetchall()
-
     routing_metrics = business_routing_metrics(con, business_id)
     con.close()
 
-    counts = {"New":0, "Contacted":0, "Booked":0, "Closed":0}
+    counts = {"New":0, "Contacted":0, "Estimate":0, "Won":0, "Lost":0}
     quality_counts = {"Hot":0, "Strong":0, "Qualified":0, "Standard":0}
-    followup_count = 0
-    overdue_count = 0
+    followup_count = overdue_count = 0
+    opp_low = opp_high = won_revenue = 0.0
 
     for r in rows:
-        status = r["status"] or "New"
-        counts[status] = counts.get(status, 0) + 1
+        status = (r["status"] or "New").strip()
+        # Map old beta statuses into the V9 pipeline for display.
+        display_status = {"Booked":"Estimate", "Closed":"Won"}.get(status, status)
+        counts[display_status] = counts.get(display_status, 0) + 1
 
         quality = r["qualification"] or "Standard"
         quality_counts[quality] = quality_counts.get(quality, 0) + 1
 
-        if status == "New":
+        low, high = lead_value_range(r, business_id)
+        if display_status not in ("Won", "Lost"):
+            opp_low += low
+            opp_high += high
+        if display_status == "Won":
+            won_revenue += float(r["final_job_value"] or 0)
+
+        if display_status == "New":
             followup_count += 1
             _, _, _, is_overdue = lead_followup_status(r)
-            if is_overdue:
-                overdue_count += 1
+            overdue_count += 1 if is_overdue else 0
 
     cards = ""
-
     for r in rows:
         phone = (r["phone"] or "").strip()
         email = (r["email"] or "").strip()
-        status = r["status"] or "New"
+        raw_status = (r["status"] or "New").strip()
+        status = {"Booked":"Estimate", "Closed":"Won"}.get(raw_status, raw_status)
         urgency = r["urgency"] or "Normal"
-        lead_score = r["lead_score"] or 0
+        lead_score = int(r["lead_score"] or 0)
         qualification = r["qualification"] or "Standard"
         recommended_action = r["recommended_action"] or "Follow up and confirm the job details."
-        followup_class, followup_text, wait_minutes, is_overdue = lead_followup_status(r)
-        wait_text = format_wait_time(wait_minutes)
-        score_reasons = dashboard_score_reasons(r)
+        followup_class, followup_text, wait_minutes, _ = lead_followup_status(r)
+        low, high = lead_value_range(r, business_id)
+        final_value = float(r["final_job_value"] or 0)
+
+        if low > 0 or high > 0:
+            opportunity = f"{money(low)}–{money(high)}"
+            value_note = "Estimated opportunity"
+        else:
+            opportunity = "Not set"
+            value_note = "Add a service range in Revenue Estimates"
+
         reason_chips = "".join(
             f'<span class="reason-chip">{html.escape(reason)}</span>'
-            for reason in score_reasons
-        )
-
-        options = "".join(
-            f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
-            for s in ["New","Contacted","Booked","Closed"]
+            for reason in dashboard_score_reasons(r)
         )
 
         cards += f"""
         <section class="lead-card">
           <div class="lead-top">
             <div>
-              <div class="lead-name">{r['name'] or 'Unnamed lead'}</div>
-              <div class="lead-time">{r['created_at']} · Waiting {wait_text}</div>
+              <div class="lead-name">{html.escape(r['name'] or 'Unnamed lead')}</div>
+              <div class="lead-time">{html.escape(r['created_at'] or '')} · Waiting {format_wait_time(wait_minutes)}</div>
             </div>
             <div class="badges">
               <span class="badge score-badge">{lead_score}/100</span>
-              <span class="badge qual-{qualification.lower()}">{qualification}</span>
-              <span class="badge urgency-{urgency.lower()}">{urgency}</span>
+              <span class="badge qual-{qualification.lower()}">{html.escape(qualification)}</span>
+              <span class="badge urgency-{urgency.lower()}">{html.escape(urgency)}</span>
             </div>
+          </div>
+
+          <div class="opportunity">
+            <span>{value_note}</span>
+            <strong>{opportunity}</strong>
+            {"<small>Actual won value: "+money(final_value)+"</small>" if status=="Won" and final_value else ""}
           </div>
 
           <div class="details">
-            <div><span>Service</span><strong>{r['service'] or 'General Repair'}</strong></div>
-            <div><span>Location</span><strong>{r['zip'] or '—'}</strong></div>
-            <div><span>Phone</span><strong>{phone or '—'}</strong></div>
-            <div><span>Email</span><strong>{email or '—'}</strong></div>
+            <div><span>Service</span><strong>{html.escape(r['service'] or 'General Repair')}</strong></div>
+            <div><span>Location</span><strong>{html.escape(r['zip'] or '—')}</strong></div>
+            <div><span>Phone</span><strong>{html.escape(phone or '—')}</strong></div>
+            <div><span>Email</span><strong>{html.escape(email or '—')}</strong></div>
           </div>
 
-          <div class="message">{r['message'] or 'No message provided.'}</div>
+          <div class="message">{html.escape(r['message'] or 'No message provided.')}</div>
 
           <div class="ai-box">
             <div class="ai-title">LeadPilot Qualification</div>
-            <div><strong>{qualification} lead · {lead_score}/100</strong></div>
+            <div><strong>{html.escape(qualification)} lead · {lead_score}/100</strong></div>
             <div class="reason-row">{reason_chips}</div>
             <div class="next-label">Recommended next step</div>
-            <div class="ai-action">{recommended_action}</div>
+            <div class="ai-action">{html.escape(recommended_action)}</div>
           </div>
 
-          <div class="followup-banner followup-{followup_class}">
-            <strong>Follow-up:</strong> {followup_text}
-          </div>
+          <div class="followup-banner followup-{followup_class}"><strong>Follow-up:</strong> {followup_text}</div>
 
           <div class="actions">
-            <a class="action primary" href="tel:{phone}">📞 Call</a>
-            <a class="action" href="sms:{phone}">💬 Text</a>
-            <a class="action" href="mailto:{email}">✉️ Email</a>
+            <a class="action primary" href="tel:{html.escape(phone, quote=True)}">📞 Call</a>
+            <a class="action" href="sms:{html.escape(phone, quote=True)}">💬 Text</a>
+            <a class="action" href="mailto:{html.escape(email, quote=True)}">✉️ Email</a>
           </div>
 
           <div class="status-row">
-            <label>Lead status</label>
+            <label>Lead pipeline</label>
             <div class="status-actions">
-              <button class="status-btn {"active" if status == "New" else ""}" onclick="updateStatus({r['id']}, 'New')">New</button>
-              <button class="status-btn {"active" if status == "Contacted" else ""}" onclick="updateStatus({r['id']}, 'Contacted')">Contacted</button>
-              <button class="status-btn {"active" if status == "Booked" else ""}" onclick="updateStatus({r['id']}, 'Booked')">Booked</button>
-              <button class="status-btn {"active" if status == "Closed" else ""}" onclick="updateStatus({r['id']}, 'Closed')">Closed</button>
+              {''.join(f'<button class="status-btn {"active" if status==s else ""}" onclick="updateStatus({r["id"]}, \'{s}\')">{s}</button>' for s in ["New","Contacted","Estimate","Won","Lost"])}
+            </div>
+            <div id="wonbox-{r['id']}" class="won-box" style="display:{'block' if status=='Won' else 'none'}">
+              <label>Final job value</label>
+              <div class="won-input"><span>$</span><input id="value-{r['id']}" type="number" min="0" step="1" value="{int(final_value) if final_value else ''}" placeholder="13400"><button onclick="saveValue({r['id']})">Save</button></div>
+              <small>Use the actual sold amount. This is what counts toward Won Revenue.</small>
             </div>
             <span id="saved-{r['id']}" class="saved"></span>
           </div>
-        </section>
-        """
+        </section>"""
 
     if not cards:
-        cards = '<div class="empty">No leads yet. New customer requests will appear here.</div>'
+        cards = '<div class="empty">No leads yet. New customer requests routed to this business will appear here.</div>'
 
-    return f"""<!doctype html>
-<html>
-<head>
+    return f"""<!doctype html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LeadPilot Dashboard</title>
+<title>LeadPilot Business Lead Inbox</title>
 <style>
-*{{box-sizing:border-box}}
-body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
-.wrap{{max-width:980px;margin:auto;padding:20px}}
-header{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}}
-h1{{font-size:28px;margin:0}}
-.sub{{color:#667085;margin-top:5px}}
-.toplinks a{{margin-left:12px;text-decoration:none;color:#3448c5;font-weight:700}}
-.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}}
-.stat{{background:#fff;padding:16px;border-radius:14px;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
-.stat b{{display:block;font-size:27px;margin-top:5px}}
-.stat span{{font-size:13px;color:#667085}}
-.leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
-.lead-card{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
-.lead-top{{display:flex;justify-content:space-between;gap:12px}}
-.lead-name{{font-size:21px;font-weight:800}}
-.lead-time{{font-size:12px;color:#667085;margin-top:5px}}
-.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
-.badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
-.score-badge{{background:#172033;color:#fff}}
-.qual-hot{{background:#dcfae6;color:#05603a}}
-.qual-strong{{background:#e0e7ff;color:#3730a3}}
-.qual-qualified{{background:#eaf2ff;color:#175cd3}}
-.qual-standard{{background:#f2f4f7;color:#344054}}
-.urgency-emergency{{background:#fee4e2;color:#b42318}}
-.urgency-high{{background:#fff0c2;color:#93370d}}
-.details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:16px 0}}
-.details div{{background:#f8fafc;padding:10px;border-radius:10px;overflow:hidden}}
-.details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}}
-.details strong{{font-size:14px;word-break:break-word}}
-.message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}}
-.ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
-.ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}}
-.ai-action{{font-size:13px;color:#475467;margin-top:4px;line-height:1.35}}
-.reason-row{{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}}
-.reason-chip{{background:#fff;border:1px solid #dbe3ef;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:700;color:#475467}}
-.next-label{{margin-top:11px;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#667085}}
-.priority-summary{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 16px}}
-.priority-pill{{background:#fff;border-radius:12px;padding:11px 12px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
-.priority-pill strong{{display:block;font-size:20px}}
-.priority-pill span{{font-size:11px;color:#667085}}
-.priority-note{{font-size:12px;color:#667085;margin:-5px 0 14px}}
-.routing-health{{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
-.routing-health span{{display:block;font-size:12px;color:#667085}}
-.routing-health strong{{font-size:28px}}
-.routing-health p{{margin:0;color:#667085;font-size:12px;text-align:right}}
-.followup-summary{{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 14px;box-shadow:0 4px 14px rgba(0,0,0,.04)}}
-.followup-summary span{{display:block;font-size:12px;color:#667085}}
-.followup-summary strong{{font-size:28px}}
-.followup-summary p{{margin:0;color:#667085;font-size:12px;max-width:460px}}
-.followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}}
-.followup-urgent{{background:#fee4e2;color:#b42318}}
-.followup-overdue{{background:#b42318;color:#fff;box-shadow:0 0 0 3px rgba(180,35,24,.10)}}
-.overdue-total{{padding:0 18px;border-left:1px solid #eaecf0;border-right:1px solid #eaecf0}}
-.overdue-total span{{display:block;font-size:12px;color:#667085}}
-.overdue-total strong{{font-size:28px;color:#b42318}}
-.followup-soon{{background:#fff0c2;color:#93370d}}
-.followup-today{{background:#eaf2ff;color:#175cd3}}
-.followup-normal{{background:#f2f4f7;color:#344054}}
-.followup-contacted{{background:#eef4ff;color:#3448c5}}
-.followup-booked{{background:#dcfae6;color:#05603a}}
-.followup-done{{background:#f2f4f7;color:#667085}}
-.actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
-.action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}}
-.action.primary{{background:#172033;color:#fff;border-color:#172033}}
-.status-row{{display:grid;grid-template-columns:1fr;gap:9px;border-top:1px solid #eaecf0;padding-top:14px}}
-.status-row label{{font-weight:800;font-size:13px}}
-.status-actions{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}}
-.status-btn{{padding:10px 6px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#344054;font-weight:800;font-size:11px}}
-.status-btn.active{{background:#172033;color:#fff;border-color:#172033}}
-.saved{{color:#067647;font-size:12px;min-height:14px}}
-.empty{{background:#fff;padding:25px;border-radius:16px}}
+*{{box-sizing:border-box}} body{{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}}
+.wrap{{max-width:980px;margin:auto;padding:20px}} header{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}}
+h1{{font-size:30px;margin:0}} .sub{{color:#667085;margin-top:5px}} .toplinks a{{margin-left:12px;text-decoration:none;color:#3448c5;font-weight:700}}
+.money-stats{{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px;margin:18px 0}}
+.money-card{{background:#172033;color:#fff;padding:18px;border-radius:16px}} .money-card.light{{background:#fff;color:#172033;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
+.money-card span{{display:block;font-size:12px;opacity:.72}} .money-card strong{{display:block;font-size:27px;margin-top:6px}} .money-card small{{display:block;margin-top:6px;opacity:.7}}
+.stats{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:12px 0 18px}} .stat{{background:#fff;padding:13px;border-radius:12px;box-shadow:0 4px 14px rgba(0,0,0,.05)}}
+.stat b{{display:block;font-size:23px;margin-top:4px}} .stat span{{font-size:11px;color:#667085}}
+.leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}} .lead-card{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
+.lead-top{{display:flex;justify-content:space-between;gap:12px}} .lead-name{{font-size:21px;font-weight:800}} .lead-time{{font-size:12px;color:#667085;margin-top:5px}}
+.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}} .badge{{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#eef2f6}}
+.score-badge{{background:#172033;color:#fff}} .qual-hot{{background:#dcfae6;color:#05603a}} .qual-strong{{background:#e0e7ff;color:#3730a3}} .qual-qualified{{background:#eaf2ff;color:#175cd3}}
+.opportunity{{margin:14px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:12px}} .opportunity span,.opportunity small{{display:block;color:#667085;font-size:11px}}
+.opportunity strong{{display:block;font-size:22px;color:#05603a;margin:3px 0}} .details{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}}
+.details div{{background:#f8fafc;padding:10px;border-radius:10px;overflow:hidden}} .details span{{display:block;font-size:11px;color:#667085;margin-bottom:4px}} .details strong{{font-size:14px;word-break:break-word}}
+.message{{border-left:4px solid #172033;background:#f7f9fc;padding:12px;border-radius:8px;line-height:1.4}} .ai-box{{margin-top:12px;padding:12px;border-radius:12px;background:#eef4ff;border:1px solid #d6e4ff}}
+.ai-title{{font-size:12px;color:#475467;font-weight:800;text-transform:uppercase}} .ai-action{{font-size:13px;color:#475467;margin-top:4px}} .reason-row{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}}
+.reason-chip{{background:#fff;border:1px solid #dbe3ef;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:700}} .next-label{{margin-top:10px;font-size:10px;font-weight:900;text-transform:uppercase;color:#667085}}
+.followup-banner{{margin:12px 0;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700}} .followup-urgent,.followup-overdue{{background:#fee4e2;color:#b42318}}
+.followup-soon{{background:#fff0c2;color:#93370d}} .followup-today,.followup-contacted{{background:#eaf2ff;color:#175cd3}} .followup-normal,.followup-done{{background:#f2f4f7;color:#344054}}
+.followup-booked{{background:#dcfae6;color:#05603a}} .actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}}
+.action{{display:block;text-align:center;text-decoration:none;border:1px solid #d0d5dd;color:#172033;padding:11px 8px;border-radius:10px;font-weight:800}} .action.primary{{background:#172033;color:#fff}}
+.status-row{{border-top:1px solid #eaecf0;padding-top:14px}} .status-row>label{{font-weight:800;font-size:13px}} .status-actions{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:8px}}
+.status-btn{{padding:10px 4px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;color:#344054;font-weight:800;font-size:10px}} .status-btn.active{{background:#172033;color:#fff;border-color:#172033}}
+.won-box{{margin-top:10px;background:#f0fdf4;padding:12px;border-radius:10px}} .won-box label{{font-size:12px;font-weight:800}} .won-input{{display:flex;align-items:center;gap:6px;margin-top:6px}}
+.won-input input{{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:16px}} .won-input button{{border:0;background:#067647;color:#fff;border-radius:8px;padding:11px 13px;font-weight:800}}
+.won-box small{{display:block;color:#667085;margin-top:6px}} .saved{{display:block;color:#067647;font-size:12px;min-height:14px;margin-top:6px}} .empty{{background:#fff;padding:25px;border-radius:16px}}
+@media(max-width:700px){{.wrap{{padding:14px}} header{{display:block}} .toplinks{{margin-top:10px}} .toplinks a{{margin:0 10px 0 0}} .money-stats{{grid-template-columns:1fr}} .stats{{grid-template-columns:repeat(3,1fr)}} .leads{{grid-template-columns:1fr}} .status-actions{{grid-template-columns:repeat(3,1fr)}}}}
+</style></head><body><div class="wrap">
+<header><div><h1>Business Lead Inbox</h1><div class="sub">{html.escape(business["name"])}</div></div>
+<div class="toplinks"><a href="/b/{business_id}">Customer page</a><a href="/revenue-estimates?business={business_id}">Revenue Estimates</a><a href="/settings?business={business_id}">Settings</a><a href="/businesses">Businesses</a><a href="/logout">Log out</a></div></header>
 
-@media(max-width:700px){{
- .wrap{{padding:14px}}
- header{{display:block}}
- .toplinks{{margin-top:10px}}
- .toplinks a{{margin:0 12px 0 0}}
- .stats{{grid-template-columns:1fr 1fr}}
- .priority-summary{{grid-template-columns:1fr 1fr}}
- .followup-summary{{display:block}}
- .followup-summary p{{margin-top:8px}}
- .overdue-total{{border:0;padding:10px 0 0}}
- .leads{{grid-template-columns:1fr}}
- .status-actions{{grid-template-columns:1fr 1fr}}
- h1{{font-size:25px}}
-}}
-</style>
-</head>
-<body>
-
-<div class="wrap">
-
-<header>
-<div>
-<h1>LeadPilot AI — Lead Dashboard</h1>
-<div class="sub">{html.escape(business["name"])}</div>
+<div class="money-stats">
+<div class="money-card"><span>Open estimated opportunity</span><strong>{money(opp_low)}–{money(opp_high)}</strong><small>Based on this business's own configured service ranges.</small></div>
+<div class="money-card light"><span>Actual won revenue</span><strong>{money(won_revenue)}</strong><small>Entered when leads are marked Won.</small></div>
+<div class="money-card light"><span>Routing health</span><strong>{routing_metrics["health"]}/100</strong><small>{routing_metrics["today_count"]} lead(s) today · {overdue_count} overdue</small></div>
 </div>
-
-<div class="toplinks">
-<a href="/b/{business_id}">Customer page</a>
-<a href="/settings?business={business_id}">Settings</a> <a href="/businesses">Businesses</a> <a href="/coverage-demand">Coverage Demand</a> <a href="/sms-status">SMS Status</a>
-<a href="/logout">Log out</a>
-</div>
-</header>
 
 <div class="stats">
-<div class="stat"><span>New Leads</span><b>{counts.get('New',0)}</b></div>
-<div class="stat"><span>Contacted</span><b>{counts.get('Contacted',0)}</b></div>
-<div class="stat"><span>Booked</span><b>{counts.get('Booked',0)}</b></div>
-<div class="stat"><span>Closed</span><b>{counts.get('Closed',0)}</b></div>
+<div class="stat"><span>New</span><b>{counts["New"]}</b></div><div class="stat"><span>Contacted</span><b>{counts["Contacted"]}</b></div>
+<div class="stat"><span>Estimate</span><b>{counts["Estimate"]}</b></div><div class="stat"><span>Won</span><b>{counts["Won"]}</b></div><div class="stat"><span>Lost</span><b>{counts["Lost"]}</b></div>
 </div>
-
-<div class="routing-health">
-  <div>
-    <span>Marketplace routing health</span>
-    <strong>{routing_metrics["health"]}/100</strong>
-  </div>
-  <p>{routing_metrics["today_count"]} lead(s) today · {routing_metrics["new_count"]} still New · {routing_metrics["overdue_new"]} overdue</p>
-</div>
-
-<div class="followup-summary">
-  <div>
-    <span>Needs follow-up</span>
-    <strong>{followup_count}</strong>
-  </div>
-  <div class="overdue-total">
-    <span>Overdue</span>
-    <strong>{overdue_count}</strong>
-  </div>
-  <p>Timers stop when a lead is marked Contacted, Booked, or Closed.</p>
-</div>
-
-<div class="priority-summary">
-  <div class="priority-pill"><strong>{quality_counts['Hot']}</strong><span>🔥 Hot leads</span></div>
-  <div class="priority-pill"><strong>{quality_counts['Strong']}</strong><span>Strong leads</span></div>
-  <div class="priority-pill"><strong>{quality_counts['Qualified']}</strong><span>Qualified leads</span></div>
-  <div class="priority-pill"><strong>{quality_counts['Standard']}</strong><span>Standard leads</span></div>
-</div>
-<div class="priority-note">New leads are automatically ordered by score so the best opportunities appear first.</div>
 
 <div class="leads">{cards}</div>
-
 </div>
-
 <script>
 setTimeout(()=>location.reload(),60000);
-
 async function updateStatus(id,status){{
- const s=document.getElementById('saved-'+id);
- s.textContent='Saving '+status+'...';
-
- const r=await fetch('/api/leads/'+id+'/status?business={business_id}',{{
-   method:'POST',
-   headers:{{'Content-Type':'application/json'}},
-   body:JSON.stringify({{status}})
- }});
-
- if(r.ok){{
-   const row=s.closest('.status-row');
-   const buttons=row.querySelectorAll('.status-btn');
-
-   buttons.forEach(btn=>{{
-     btn.classList.toggle(
-       'active',
-       btn.textContent.trim() === status
-     );
-   }});
-
-   s.textContent='✓ '+status;
-   setTimeout(()=>location.reload(),900);
- }}else{{
-   s.textContent='Could not save';
- }}
+ const s=document.getElementById('saved-'+id); s.textContent='Saving '+status+'...';
+ const r=await fetch('/api/leads/'+id+'/status?business={business_id}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{status}})}});
+ if(r.ok){{ document.getElementById('wonbox-'+id).style.display=status==='Won'?'block':'none'; s.textContent='✓ '+status; setTimeout(()=>location.reload(),700); }}
+ else s.textContent='Could not save';
 }}
-</script>
-
-</body>
-</html>"""
+async function saveValue(id){{
+ const s=document.getElementById('saved-'+id), value=document.getElementById('value-'+id).value;
+ s.textContent='Saving job value...';
+ const r=await fetch('/api/leads/'+id+'/value?business={business_id}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{final_job_value:value}})}});
+ s.textContent=r.ok?'✓ Job value saved':'Could not save job value';
+ if(r.ok) setTimeout(()=>location.reload(),700);
+}}
+</script></body></html>"""
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -4088,6 +4126,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/login")
                 return
             self.send_bytes(sms_status_html().encode())
+
+        elif p == "/revenue-estimates":
+            if not logged_in(self.headers):
+                self.redirect("/login")
+                return
+            try:
+                business_id = int(query.get("business", [BUSINESS_ID])[0])
+            except Exception:
+                business_id = BUSINESS_ID
+            self.send_bytes(
+                revenue_estimates_html(
+                    business_id,
+                    query.get("message", [""])[0]
+                ).encode()
+            )
 
         elif p == "/recruiting":
             if not logged_in(self.headers):
@@ -4499,6 +4552,73 @@ class Handler(BaseHTTPRequestHandler):
 
                 return
 
+            if p == "/revenue-estimates":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                try:
+                    business_id = int(data.get("business_id", BUSINESS_ID))
+                    low = max(0.0, float(data.get("low_value", 0) or 0))
+                    high = max(0.0, float(data.get("high_value", 0) or 0))
+                except Exception:
+                    self.send_bytes(b"Bad pricing values", 400)
+                    return
+                service = (data.get("service") or "").strip()
+                if not service or high < low:
+                    self.send_bytes(b"Service required and high value must be >= low value", 400)
+                    return
+                con = db()
+                if USE_POSTGRES:
+                    execute(con, """INSERT INTO service_pricing(business_id,service,low_value,high_value)
+                                    VALUES(?,?,?,?)
+                                    ON CONFLICT (business_id,service)
+                                    DO UPDATE SET low_value=EXCLUDED.low_value, high_value=EXCLUDED.high_value""",
+                            (business_id, service, low, high))
+                else:
+                    execute(con, """INSERT OR REPLACE INTO service_pricing(business_id,service,low_value,high_value)
+                                    VALUES(?,?,?,?)""", (business_id, service, low, high))
+                con.commit(); con.close()
+                self.redirect(f"/revenue-estimates?business={business_id}&message=Estimate%20range%20saved")
+                return
+
+            if p == "/revenue-estimates/delete":
+                if not logged_in(self.headers):
+                    self.redirect("/login")
+                    return
+                try:
+                    business_id = int(data.get("business_id", BUSINESS_ID))
+                except Exception:
+                    business_id = BUSINESS_ID
+                service = (data.get("service") or "").strip()
+                con = db()
+                execute(con, "DELETE FROM service_pricing WHERE business_id=? AND service=?", (business_id, service))
+                con.commit(); con.close()
+                self.redirect(f"/revenue-estimates?business={business_id}&message=Estimate%20range%20removed")
+                return
+
+            if p.startswith("/api/leads/") and p.endswith("/value"):
+                if not logged_in(self.headers):
+                    self.send_bytes(b'{"error":"unauthorized"}', 401, "application/json")
+                    return
+                parts = p.strip("/").split("/")
+                lead_id = int(parts[2])
+                try:
+                    business_id = int(query.get("business", [BUSINESS_ID])[0])
+                    final_value = max(0.0, float(data.get("final_job_value", 0) or 0))
+                except Exception:
+                    self.send_bytes(b'{"error":"bad value"}', 400, "application/json")
+                    return
+                con = db()
+                cur = execute(con, "UPDATE leads SET final_job_value=? WHERE id=? AND business_id=?",
+                              (final_value, lead_id, business_id))
+                con.commit(); changed = cur.rowcount; con.close()
+                if not changed:
+                    self.send_bytes(b'{"error":"lead not found"}', 404, "application/json")
+                    return
+                self.send_bytes(json.dumps({"ok":True,"id":lead_id,"final_job_value":final_value}).encode(),
+                                content_type="application/json")
+                return
+
             if p.startswith("/api/leads/") and p.endswith("/status"):
 
                 if not logged_in(self.headers):
@@ -4517,7 +4637,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     business_id = BUSINESS_ID
 
-                if status not in ["New", "Contacted", "Booked", "Closed"]:
+                if status not in ["New", "Contacted", "Estimate", "Won", "Lost"]:
                     self.send_bytes(
                         b'{"error":"bad status"}',
                         400,
