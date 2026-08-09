@@ -4330,6 +4330,18 @@ def dashboard_html(business_id=BUSINESS_ID):
         p_name = html.escape(priority_row["name"] or "Unnamed lead")
         p_reason = html.escape(priority_reason(priority_row, business_id))
         p_wait = format_wait_time(p_wait_minutes)
+        p_raw_status = (priority_row["status"] or "New").strip()
+        p_status = {"Booked":"Estimate", "Closed":"Won"}.get(p_raw_status, p_raw_status)
+        p_email = (priority_row["email"] or "").strip()
+        p_final_value = float(priority_row["final_job_value"] or 0)
+
+        priority_status_buttons = ""
+        for s in ["New","Contacted","Estimate","Won","Lost"]:
+            active = "active" if p_status == s else ""
+            priority_status_buttons += (
+                f'<button class="priority-status-btn {active}" '
+                f'onclick="updateStatus({priority_row["id"]}, \'{s}\')">{s}</button>'
+            )
 
         priority_html = f"""
         <section class="priority-card">
@@ -4352,7 +4364,24 @@ def dashboard_html(business_id=BUSINESS_ID):
             <div><span>Status</span><strong>{"🚨 OVERDUE" if p_overdue else "Open"}</strong></div>
           </div>
 
-          <a class="priority-call" href="tel:{html.escape(p_phone, quote=True)}">📞 CALL THIS LEAD NOW</a>
+          <div class="priority-contact-actions">
+            <a class="priority-call" href="tel:{html.escape(p_phone, quote=True)}">📞 Call</a>
+            <a class="priority-contact" href="sms:{html.escape(p_phone, quote=True)}">💬 Text</a>
+            <a class="priority-contact" href="mailto:{html.escape(p_email, quote=True)}">✉️ Email</a>
+          </div>
+
+          <div class="priority-pipeline">
+            <div class="priority-pipeline-label">MOVE THIS LEAD</div>
+            <div class="priority-status-actions">{priority_status_buttons}</div>
+
+            <div id="wonbox-{priority_row['id']}" class="priority-won-box" style="display:{'block' if p_status=='Won' else 'none'}">
+              <label>Final job value</label>
+              <div class="won-input"><span>$</span><input id="value-{priority_row['id']}" type="number" min="0" step="1" value="{int(p_final_value) if p_final_value else ''}" placeholder="13400"><button onclick="saveValue({priority_row['id']})">Save</button></div>
+              <small>Enter the actual sold amount. Saving moves revenue into Actual Won Revenue.</small>
+            </div>
+
+            <span id="saved-{priority_row['id']}" class="priority-saved"></span>
+          </div>
         </section>
         """
     else:
@@ -4400,6 +4429,9 @@ def dashboard_html(business_id=BUSINESS_ID):
     # -------------------------------
     cards = ""
     for r in rows:
+        if priority_id is not None and r["id"] == priority_id:
+            continue
+
         phone = (r["phone"] or "").strip()
         email = (r["email"] or "").strip()
         raw_status = (r["status"] or "New").strip()
@@ -4425,7 +4457,7 @@ def dashboard_html(business_id=BUSINESS_ID):
         )
 
         cards += f"""
-        <section class="lead-card">
+        <section class="lead-card" data-stage="{html.escape(status)}">
           <div class="lead-top">
             <div>
               <div class="lead-name">{html.escape(r['name'] or 'Unnamed lead')}</div>
@@ -4512,7 +4544,18 @@ h1{{font-size:30px;margin:0}}
 .priority-facts div{{background:rgba(255,255,255,.08);border-radius:10px;padding:10px}}
 .priority-facts span{{display:block;font-size:10px;text-transform:uppercase;color:#b8c0cc}}
 .priority-facts strong{{display:block;font-size:15px;margin-top:3px}}
-.priority-call{{display:block;text-align:center;background:#fff;color:#172033;text-decoration:none;border-radius:11px;padding:14px;font-size:15px;font-weight:900}}
+.priority-contact-actions{{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;margin-top:16px}}
+.priority-call,.priority-contact{{display:block;text-align:center;background:#fff;color:#172033;text-decoration:none;border-radius:11px;padding:14px 8px;font-size:15px;font-weight:900}}
+.priority-contact{{background:rgba(255,255,255,.10);color:#fff;border:1px solid rgba(255,255,255,.18)}}
+.priority-pipeline{{margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,.15)}}
+.priority-pipeline-label{{font-size:10px;font-weight:900;letter-spacing:.06em;color:#b8c0cc;margin-bottom:8px}}
+.priority-status-actions{{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}}
+.priority-status-btn{{padding:10px 5px;border:1px solid rgba(255,255,255,.22);border-radius:9px;background:rgba(255,255,255,.08);color:#fff;font-weight:800;font-size:10px}}
+.priority-status-btn.active{{background:#fff;color:#172033}}
+.priority-won-box{{margin-top:10px;background:#effcf6;color:#172033;padding:12px;border-radius:10px}}
+.priority-won-box label{{font-size:12px;font-weight:800}}
+.priority-won-box small{{display:block;color:#667085;margin-top:6px}}
+.priority-saved{{display:block;color:#8ef0bb;font-size:12px;min-height:14px;margin-top:7px}}
 .money-grid{{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr;gap:10px;margin:18px 0}}
 .money-card{{background:#172033;color:#fff;padding:18px;border-radius:16px}}
 .money-card.light{{background:#fff;color:#172033;box-shadow:0 5px 18px rgba(0,0,0,.06)}}
@@ -4545,6 +4588,16 @@ h1{{font-size:30px;margin:0}}
 .section-title{{display:flex;justify-content:space-between;gap:10px;align-items:end;margin:18px 0 10px}}
 .section-title h2{{margin:0}}
 .section-title span{{font-size:12px;color:#667085}}
+.folder-bar{{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:10px 0 16px}}
+.folder{{border:1px solid #dfe3ea;background:#fff;color:#172033;border-radius:12px;padding:12px 8px;text-align:left;box-shadow:0 3px 10px rgba(0,0,0,.04)}}
+.folder span{{display:block;font-size:11px;color:#667085}}
+.folder b{{display:block;font-size:22px;margin-top:3px}}
+.folder.active{{background:#172033;color:#fff;border-color:#172033}}
+.folder.active span{{color:#cbd5e1}}
+.folder-heading{{display:flex;justify-content:space-between;align-items:end;gap:12px;margin:8px 0 10px}}
+.folder-heading h2{{margin:0}}
+.folder-heading span{{font-size:12px;color:#667085;text-align:right}}
+.folder-empty{{background:#fff;padding:24px;border-radius:16px;color:#667085;text-align:center}}
 
 .leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
 .lead-card{{background:#fff;border-radius:18px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}}
@@ -4611,6 +4664,11 @@ h1{{font-size:30px;margin:0}}
   .priority-main{{display:block}}
   .priority-value{{text-align:left;margin-top:14px}}
   .priority-facts{{grid-template-columns:1fr 1fr 1fr}}
+  .priority-contact-actions{{grid-template-columns:1fr 1fr 1fr}}
+  .priority-status-actions{{grid-template-columns:repeat(3,1fr)}}
+  .folder-bar{{grid-template-columns:repeat(3,1fr)}}
+  .folder-heading{{display:block}}
+  .folder-heading span{{display:block;text-align:left;margin-top:4px}}
   .money-grid{{grid-template-columns:1fr}}
   .stats{{grid-template-columns:repeat(3,1fr)}}
   .leads{{grid-template-columns:1fr}}
@@ -4678,11 +4736,26 @@ h1{{font-size:30px;margin:0}}
 </div>
 
 <div class="section-title">
-  <h2>Lead Pipeline</h2>
-  <span>{open_count} open · Routing health {routing_metrics["health"]}/100</span>
+  <h2>Lead Folders</h2>
+  <span>Priority lead stays above · Routing health {routing_metrics["health"]}/100</span>
 </div>
 
-<div class="leads">{cards}</div>
+<div class="folder-bar">
+  <button class="folder active" data-folder="New" onclick="filterLeads('New', this)"><span>New</span><b>{counts["New"]}</b></button>
+  <button class="folder" data-folder="Contacted" onclick="filterLeads('Contacted', this)"><span>Contacted</span><b>{counts["Contacted"]}</b></button>
+  <button class="folder" data-folder="Estimate" onclick="filterLeads('Estimate', this)"><span>Estimates</span><b>{counts["Estimate"]}</b></button>
+  <button class="folder" data-folder="Won" onclick="filterLeads('Won', this)"><span>Won</span><b>{counts["Won"]}</b></button>
+  <button class="folder" data-folder="Lost" onclick="filterLeads('Lost', this)"><span>Lost</span><b>{counts["Lost"]}</b></button>
+  <button class="folder" data-folder="Open" onclick="filterLeads('Open', this)"><span>All Open</span><b>{open_count}</b></button>
+</div>
+
+<div class="folder-heading">
+  <h2 id="folder-title">New Leads</h2>
+  <span id="folder-note">Untouched leads waiting for first contact</span>
+</div>
+
+<div class="leads" id="lead-list">{cards}</div>
+<div class="folder-empty" id="folder-empty" style="display:none">No leads in this folder.</div>
 </div>
 
 <script>
@@ -4699,13 +4772,54 @@ async function updateStatus(id,status){{
  }});
 
  if(r.ok){{
-   document.getElementById('wonbox-'+id).style.display=status==='Won'?'block':'none';
+   const wonbox=document.getElementById('wonbox-'+id);
+   if(wonbox) wonbox.style.display=status==='Won'?'block':'none';
    s.textContent='✓ '+status;
-   setTimeout(()=>location.reload(),700);
+
+   if(status==='Won'){{
+     s.textContent='✓ Won — enter final job value below';
+   }} else {{
+     setTimeout(()=>location.reload(),550);
+   }}
  }} else {{
    s.textContent='Could not save';
  }}
 }}
+
+function filterLeads(stage, btn){{
+ const cards=[...document.querySelectorAll('.lead-card')];
+ let shown=0;
+
+ cards.forEach(card=>{{
+   const s=card.dataset.stage;
+   const match = stage==='Open'
+     ? ['New','Contacted','Estimate'].includes(s)
+     : s===stage;
+   card.style.display=match?'block':'none';
+   if(match) shown++;
+ }});
+
+ document.querySelectorAll('.folder').forEach(x=>x.classList.remove('active'));
+ if(btn) btn.classList.add('active');
+
+ const labels={{
+   New:['New Leads','Untouched leads waiting for first contact'],
+   Contacted:['Contacted','Customers your team has already reached'],
+   Estimate:['Estimates','Jobs where an estimate or quote is in progress'],
+   Won:['Won Jobs','Closed business and actual revenue'],
+   Lost:['Lost Leads','Closed opportunities that did not convert'],
+   Open:['All Open Leads','New + Contacted + Estimate, excluding #1 Priority']
+ }};
+ const label=labels[stage]||labels.New;
+ document.getElementById('folder-title').textContent=label[0];
+ document.getElementById('folder-note').textContent=label[1];
+ document.getElementById('folder-empty').style.display=shown?'none':'block';
+}}
+
+window.addEventListener('DOMContentLoaded',()=>{{
+ const first=document.querySelector('.folder[data-folder="New"]');
+ filterLeads('New', first);
+}});
 
 async function saveValue(id){{
  const s=document.getElementById('saved-'+id);
