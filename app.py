@@ -2290,14 +2290,14 @@ def marketplace_reply(message, context=None):
         "Plumbing": [
             "water heater", "hot water heater", "tankless",
             "plumber", "plumbing", "pipe", "toilet", "sink", "faucet",
-            "drain", "sewer", "garbage disposal", "water leak"
+            "drain", "sewer", "garbage disposal", "septic"
         ],
         "HVAC": [
             "hvac", "air conditioning", "a/c", "ac", "furnace",
             "heat pump", "central heat", "heating system"
         ],
         "Electrical": ["electrician", "electrical", "electric", "outlet", "breaker", "wiring", "power"],
-        "Roofing": ["roofer", "roofing", "roof", "shingle"]
+        "Roofing": ["roofer", "roofing", "roof", "shingle", "shingles", "flashing", "skylight"]
     }
 
     explicit_service_change = False
@@ -2374,7 +2374,7 @@ def marketplace_reply(message, context=None):
 
         if service == "General Repair":
             return {
-                "reply": "I can help find the right local business. What type of work do you need — HVAC, plumbing, electrical, roofing, or something else?",
+                "reply": "I want to make sure I send this to the right type of professional. Is this HVAC, plumbing, electrical, roofing, or something else?",
                 "service": service,
                 "urgency": urgency,
                 "issue": issue,
@@ -2526,48 +2526,180 @@ def marketplace_reply(message, context=None):
 
 
 def classify(text):
-    t = (text or "").lower()
+    """
+    LeadPilot Service Classifier V3.
 
-    plumbing_terms = [
-        "water heater", "hot water heater", "tankless",
-        "pipe", "plumb", "toilet", "sink", "faucet", "drain",
-        "sewer", "garbage disposal", "water leak", "leak"
-    ]
-    hvac_terms = [
-        "ac ", "ac.", "my ac", "a/c", "air condition", "hvac",
-        "furnace", "heat pump", "central heat", "heating system"
-    ]
-    electrical_terms = ["electric", "outlet", "breaker", "power", "wire", "wiring", "sparking"]
-    roofing_terms = ["roof", "shingle", "roof leak", "ceiling leak"]
+    Important rule:
+    A symptom such as "leak", "broken", or "not working" does NOT identify
+    the trade by itself. We classify from the object/system causing the
+    problem (roof, pipe, AC, outlet, etc.) and use symptom words only for
+    urgency.
 
-    if any(x in t for x in plumbing_terms):
-        service = "Plumbing"
-    elif any(x in t for x in hvac_terms):
-        service = "HVAC"
-    elif any(x in t for x in electrical_terms):
-        service = "Electrical"
-    elif any(x in t for x in roofing_terms):
-        service = "Roofing"
-    else:
+    The classifier uses weighted context instead of first-keyword-wins.
+    Strong, specific equipment/structure terms outweigh broad words.
+    """
+    t = " ".join((text or "").lower().replace("-", " ").split())
+    padded = f" {t} "
+
+    scores = {
+        "Plumbing": 0,
+        "HVAC": 0,
+        "Electrical": 0,
+        "Roofing": 0,
+    }
+
+    def hit(phrase):
+        return phrase in t
+
+    def add(service, phrases, weight):
+        for phrase in phrases:
+            if hit(phrase):
+                scores[service] += weight
+
+    # -------------------------------------------------------------
+    # STRONG TRADE ANCHORS
+    # These identify the physical system involved.
+    # -------------------------------------------------------------
+    add("Roofing", [
+        "roof", "roofing", "roofer", "shingle", "shingles",
+        "roof tile", "roof tiles", "flashing", "soffit", "fascia",
+        "ridge vent", "roof vent", "skylight", "underlayment",
+        "roof hole", "hole in my roof", "hole on my roof",
+        "missing shingles", "damaged shingles"
+    ], 7)
+
+    add("Plumbing", [
+        "plumbing", "plumber", "water heater", "hot water heater",
+        "tankless water heater", "toilet", "sink", "faucet",
+        "garbage disposal", "sewer", "septic", "drain", "drain line",
+        "water line", "supply line", "pipe", "pipes", "hose bib",
+        "spigot", "shower valve", "tub", "bathtub", "water softener"
+    ], 7)
+
+    add("HVAC", [
+        "hvac", "air conditioner", "air conditioning", "a/c",
+        "ac unit", "my ac", "furnace", "heat pump", "thermostat",
+        "air handler", "condenser", "evaporator", "ductwork", "duct work",
+        "central air", "central heat", "heating system", "cooling system",
+        "mini split", "minisplit"
+    ], 7)
+
+    add("Electrical", [
+        "electrician", "electrical", "breaker", "circuit breaker",
+        "electrical panel", "panel box", "outlet", "receptacle",
+        "light switch", "wiring", "wire", "junction box",
+        "gfci", "gfi", "ceiling fan", "light fixture",
+        "meter base", "service panel"
+    ], 7)
+
+    # -------------------------------------------------------------
+    # SUPPORTING CONTEXT
+    # Useful when the customer describes a system less directly.
+    # -------------------------------------------------------------
+    add("Roofing", [
+        "attic after rain", "rain coming in", "rain water coming in",
+        "storm damage", "hail damage", "wind damage",
+        "water coming through roof", "leaking roof",
+        "roof is leaking", "roof leak"
+    ], 5)
+
+    add("Plumbing", [
+        "clogged", "backed up", "won't flush", "wont flush",
+        "no hot water", "low water pressure", "water pressure",
+        "water leak from pipe", "pipe leak", "leaking pipe",
+        "under sink leak", "toilet leaking", "faucet leaking",
+        "drain leaking", "sewer smell"
+    ], 5)
+
+    add("HVAC", [
+        "no ac", "no a/c", "not cooling", "won't cool", "wont cool",
+        "not heating", "no heat", "blowing warm air", "blowing hot air",
+        "blowing cold air", "outside unit", "inside unit",
+        "air not blowing", "ac leaking", "a/c leaking",
+        "condensate drain"
+    ], 5)
+
+    add("Electrical", [
+        "no power", "power outage in", "keeps tripping", "breaker tripping",
+        "sparking outlet", "burning outlet", "lights flickering",
+        "flickering lights", "electrical smell", "buzzing outlet"
+    ], 5)
+
+    # -------------------------------------------------------------
+    # DISAMBIGUATION RULES
+    # A generic word like "leak" is NEVER a plumbing vote by itself.
+    # -------------------------------------------------------------
+    if "leak" in t or "leaking" in t:
+        if any(x in t for x in ("roof", "shingle", "flashing", "skylight", "rain", "storm", "attic")):
+            scores["Roofing"] += 6
+        if any(x in t for x in ("pipe", "sink", "toilet", "faucet", "drain", "water heater", "shower", "tub", "sewer")):
+            scores["Plumbing"] += 6
+        if any(x in t for x in ("ac", "a/c", "air conditioner", "air handler", "condensate", "hvac")):
+            scores["HVAC"] += 6
+
+    # "Water" alone is not plumbing. Roof leaks and AC condensate both
+    # involve water, so it only supports a trade when paired with an anchor.
+    if "water" in t:
+        if any(x in t for x in ("pipe", "sink", "toilet", "faucet", "drain", "water heater", "sewer", "shower", "tub")):
+            scores["Plumbing"] += 2
+        if any(x in t for x in ("roof", "shingle", "flashing", "skylight", "rain", "attic")):
+            scores["Roofing"] += 2
+        if any(x in t for x in ("ac", "a/c", "air conditioner", "air handler", "condensate")):
+            scores["HVAC"] += 2
+
+    # "Power" can be colloquial. Require electrical context unless it is
+    # the explicit phrase "no power".
+    if "no power" in t:
+        scores["Electrical"] += 5
+
+    # -------------------------------------------------------------
+    # PICK A TRADE
+    # -------------------------------------------------------------
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_service, best_score = ranked[0]
+    second_score = ranked[1][1]
+
+    # If there is no real trade signal, or two trades are effectively tied,
+    # do not guess. The chat will ask the customer what type of work it is.
+    if best_score < 5:
         service = "General Repair"
+    elif best_score == second_score and best_score > 0:
+        service = "General Repair"
+    elif best_score - second_score <= 1 and second_score >= 5:
+        service = "General Repair"
+    else:
+        service = best_service
 
+    # -------------------------------------------------------------
+    # URGENCY IS SEPARATE FROM TRADE CLASSIFICATION
+    # -------------------------------------------------------------
     emergency_signals = [
-        "gas leak", "smell gas", "fire", "sparking", "electrical arcing",
-        "burst pipe", "major flooding", "water pouring", "ceiling collapsing"
+        "smell gas", "gas leak", "fire", "on fire",
+        "electrical arcing", "sparking", "smoke coming from",
+        "burst pipe", "pipe burst", "major flooding", "water pouring",
+        "ceiling collapsing", "roof collapsing",
+        "live wire", "exposed live wire"
     ]
     high_time_signals = [
         "today", "asap", "urgent", "right now", "immediately",
-        "need it fixed now", "need someone now", "same day"
+        "need it fixed now", "need someone now", "same day",
+        "as soon as possible", "this morning", "this afternoon",
+        "this evening", "tonight"
     ]
     active_problem_signals = [
-        "not working", "stopped working", "no ac", "no heat",
+        "not working", "stopped working", "no ac", "no a/c", "no heat",
         "leaking", "leak", "flooding", "overflowing", "broken",
-        "won't turn on", "wont turn on", "no power"
+        "won't turn on", "wont turn on", "no power",
+        "hole in", "missing shingles", "keeps tripping", "rain coming through", "water coming through roof"
     ]
 
     if any(x in t for x in emergency_signals):
         urgency = "Emergency"
-    elif any(x in t for x in high_time_signals) or any(x in t for x in active_problem_signals):
+    elif (
+        any(x in t for x in high_time_signals)
+        or any(x in t for x in active_problem_signals)
+        or ("rain" in t and any(x in t for x in ("roof", "shingle", "flashing", "skylight", "attic")))
+    ):
         urgency = "High"
     else:
         urgency = "Normal"
