@@ -2082,6 +2082,49 @@ h3{{margin:5px 0;font-size:21px}} .prospect p{{margin:0;color:#667085;font-size:
 </html>"""
 
 
+def _normalize_marketplace_location_input(text):
+    """Strip conversational wrappers so phrases like 'in Lake City' resolve as locations."""
+    value = " ".join((text or "").strip().split())
+    lower = value.lower()
+    prefixes = (
+        "i am in ", "i'm in ", "im in ", "we are in ", "we're in ",
+        "the job is in ", "job is in ", "it is in ", "it's in ", "its in ",
+        "located in ", "location is ", "in ", "near ", "around ", "at "
+    )
+    for prefix in prefixes:
+        if lower.startswith(prefix) and len(value) > len(prefix):
+            return value[len(prefix):].strip(" ,.-")
+    return value
+
+
+def _explicit_marketplace_service(message, current_service=""):
+    """Return an explicitly named trade without treating symptoms as trade names."""
+    msg_lower = (message or "").lower()
+    service_words = {
+        "Plumbing": [
+            "water heater", "hot water heater", "tankless", "plumber", "plumbing",
+            "pipe", "toilet", "sink", "faucet", "drain", "sewer",
+            "garbage disposal", "septic"
+        ],
+        "HVAC": [
+            "hvac", "air conditioning", "a/c", "ac unit", "my ac", "furnace",
+            "heat pump", "central heat", "heating system", "thermostat"
+        ],
+        "Electrical": [
+            "electrician", "electrical", "electric", "outlet", "breaker", "wiring",
+            "wire", "run power", "ran power", "power to my", "power to the",
+            "power ran", "power run", "panel box", "electrical panel"
+        ],
+        "Roofing": [
+            "roofer", "roofing", "roof", "shingle", "shingles", "flashing", "skylight"
+        ]
+    }
+    for candidate, words in service_words.items():
+        if candidate != current_service and any(word in msg_lower for word in words):
+            return candidate
+    return ""
+
+
 def marketplace_reply(message, context=None):
     """Business-neutral LeadPilot flow: problem -> location -> match -> contact info."""
     context = context or {}
@@ -2111,20 +2154,49 @@ def marketplace_reply(message, context=None):
             if customer_location and service and service != "General Repair":
                 step = "location"
 
+    # Conversation interrupt handling (V18): customers do not always answer
+    # the exact question LeadPilot just asked. If they clearly name a different
+    # trade while in a no-coverage/waitlist branch, treat that as a NEW service
+    # search and reset the old location + notification state.
+    interrupted_service = _explicit_marketplace_service(msg, service)
+    if interrupted_service and step in (
+        "coverage_waitlist_offer", "waitlist_name", "waitlist_phone",
+        "waitlist_email", "waitlist_complete", "location"
+    ):
+        service = interrupted_service
+        detected_service, detected_urgency = classify(msg)
+        urgency = detected_urgency
+        issue = msg
+        return {
+            "reply": f"Got it — you need {service.lower()} help. What Florida city or ZIP code is the job in?",
+            "service": service,
+            "urgency": urgency,
+            "issue": issue,
+            "intake_step": "location",
+            "matched_business_id": 0,
+            "business_name": "",
+            "customer_zip": "",
+            "customer_location": "",
+            "waitlist_name": "",
+            "waitlist_phone": "",
+            "waitlist_email": ""
+        }
+
     # Coverage waitlist flow for areas with no current provider.
     if step == "coverage_waitlist_offer":
         # If the customer simply enters another valid Florida city/ZIP, treat it as
         # a new location search rather than forcing them into the waitlist.
-        alternate = resolve_florida_location(msg)
+        normalized_location = _normalize_marketplace_location_input(msg)
+        alternate = resolve_florida_location(normalized_location)
         if alternate and msg_lower not in ("yes", "yeah", "yep", "sure", "ok", "okay"):
-            matched, resolved = match_business_for_lead(service, msg)
-            customer_location = msg
-            customer_zip = (resolved or {}).get("postcode") or _extract_zip(msg)
+            matched, resolved = match_business_for_lead(service, normalized_location)
+            customer_location = normalized_location
+            customer_zip = (resolved or {}).get("postcode") or _extract_zip(normalized_location)
 
             if matched:
                 matched_business_id = int(matched["id"])
                 matched_business_name = matched["name"] or "a local provider"
-                place = (resolved or {}).get("display") or msg
+                place = (resolved or {}).get("display") or normalized_location
                 return {
                     "reply": f"I found {matched_business_name}, which covers {place} and offers {service}. What's your name?",
                     "service": service, "urgency": urgency, "issue": issue,
@@ -2135,7 +2207,7 @@ def marketplace_reply(message, context=None):
                     "customer_location": customer_location
                 }
 
-            place = (resolved or {}).get("display") or msg
+            place = (resolved or {}).get("display") or normalized_location
             return {
                 "reply": (
                     f"I still don't have a verified {service.lower()} provider serving {place}. "
@@ -2150,12 +2222,15 @@ def marketplace_reply(message, context=None):
 
         if msg_lower in ("no", "nope", "not now", "no thanks", "cancel"):
             return {
-                "reply": "No problem. You can send another Florida city or ZIP code and I'll check that area.",
+                "reply": "No problem. Send another Florida city or ZIP code and I'll check that area.",
                 "service": service, "urgency": urgency, "issue": issue,
                 "intake_step": "location",
                 "matched_business_id": 0, "business_name": "",
-                "customer_zip": customer_zip,
-                "customer_location": customer_location
+                "customer_zip": "",
+                "customer_location": "",
+                "waitlist_name": "",
+                "waitlist_phone": "",
+                "waitlist_email": ""
             }
 
         if msg_lower in ("yes", "yeah", "yep", "sure", "ok", "okay", "please", "yes please"):
@@ -2163,20 +2238,6 @@ def marketplace_reply(message, context=None):
                 "reply": "Absolutely. What's your name?",
                 "service": service, "urgency": urgency, "issue": issue,
                 "intake_step": "waitlist_name",
-                "matched_business_id": 0, "business_name": "",
-                "customer_zip": customer_zip,
-                "customer_location": customer_location
-            }
-
-        # A natural name answer is also accepted.
-        parsed_name = _extract_name(msg)
-        if parsed_name:
-            waitlist_name = parsed_name
-            return {
-                "reply": f"Thanks, {waitlist_name}. What's the best 10-digit phone number to notify you?",
-                "service": service, "urgency": urgency, "issue": issue,
-                "intake_step": "waitlist_phone",
-                "waitlist_name": waitlist_name,
                 "matched_business_id": 0, "business_name": "",
                 "customer_zip": customer_zip,
                 "customer_location": customer_location
@@ -2286,26 +2347,10 @@ def marketplace_reply(message, context=None):
 
     # Let the customer change service naturally at any point.
     switched_service, switched_urgency = classify(msg)
-    service_words = {
-        "Plumbing": [
-            "water heater", "hot water heater", "tankless",
-            "plumber", "plumbing", "pipe", "toilet", "sink", "faucet",
-            "drain", "sewer", "garbage disposal", "septic"
-        ],
-        "HVAC": [
-            "hvac", "air conditioning", "a/c", "ac", "furnace",
-            "heat pump", "central heat", "heating system"
-        ],
-        "Electrical": ["electrician", "electrical", "electric", "outlet", "breaker", "wiring", "power"],
-        "Roofing": ["roofer", "roofing", "roof", "shingle", "shingles", "flashing", "skylight"]
-    }
-
-    explicit_service_change = False
-    for candidate, words in service_words.items():
-        if candidate != service and any(word in msg_lower for word in words):
-            switched_service = candidate
-            explicit_service_change = True
-            break
+    explicit_candidate = _explicit_marketplace_service(msg, service)
+    explicit_service_change = bool(explicit_candidate)
+    if explicit_service_change:
+        switched_service = explicit_candidate
 
     if explicit_service_change and service:
         service = switched_service
@@ -2395,7 +2440,7 @@ def marketplace_reply(message, context=None):
         }
 
     if step == "location":
-        location = msg
+        location = _normalize_marketplace_location_input(msg)
         customer_location = location
         matched, resolved = match_business_for_lead(service, location)
 
