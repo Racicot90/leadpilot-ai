@@ -3760,6 +3760,11 @@ button{
 }
 .next-box h3{font-size:17px;margin-bottom:10px}
 .next-step{display:flex;gap:10px;margin:9px 0;color:#475467;line-height:1.4}
+.new-request-btn{
+ display:block;margin-top:18px;padding:15px 18px;border-radius:14px;
+ background:#17233f;color:#fff;text-decoration:none;text-align:center;
+ font-weight:900;letter-spacing:.02em
+}
 .step-num{
   flex:0 0 24px;height:24px;border-radius:50%;
   background:var(--navy);color:#fff;display:grid;place-items:center;
@@ -3918,6 +3923,8 @@ button{
     <div class="next-step"><div class="step-num">2</div><div>They'll contact you using the information you provided.</div></div>
     <div class="next-step"><div class="step-num">3</div><div>You can discuss pricing, scheduling, and job details directly with them.</div></div>
   </div>
+
+  <a class="new-request-btn" href="/">START ANOTHER REQUEST →</a>
 </div>
 
 <div class="card owner-card">
@@ -4210,6 +4217,15 @@ async function submitLead(auto=false){
    document.getElementById('summaryCard').style.display='none';
    document.getElementById('confirmationCard').classList.add('visible');
    refreshBusinessBanner();
+
+   // V19: once a contractor-specific request is successfully completed,
+   // make a future browser refresh begin at LeadPilot's general marketplace.
+   // The contractor branding remains correct during the active request.
+   if(window.location.pathname.startsWith('/b/')){
+     try{
+       window.history.replaceState({}, '', '/');
+     }catch(e){}
+   }
 
    window.scrollTo({top:0,behavior:'smooth'});
  }else{
