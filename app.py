@@ -3900,7 +3900,8 @@ let chatContext = {
   waitlist_email: "",
   marketplace_mode: __MARKETPLACE_MODE__,
   lead_submitted: false,
-  waitlist_saved: false
+  waitlist_saved: false,
+  service_locked: false
 };
 
 const configuredBusinessName = '__BUSINESS_NAME__';
@@ -4046,7 +4047,6 @@ function refreshSummary(){
  }
 
  refreshBusinessBanner();
-refreshSummary();
 }
 
 async function sendChat(){
@@ -4071,7 +4071,12 @@ async function sendChat(){
  const j=await r.json();
 
  add(j.reply,'bot');
- chatContext.service=j.service||chatContext.service;
+ if(j.service){
+   if(!chatContext.service_locked || chatContext.service==='General Repair' || j.service===chatContext.service){
+     chatContext.service=j.service;
+     if(j.service!=='General Repair') chatContext.service_locked=true;
+   }
+ }
  chatContext.urgency=j.urgency||chatContext.urgency;
  chatContext.issue=j.issue||chatContext.issue;
  if(j.intake_step!==undefined) chatContext.intake_step=j.intake_step;
@@ -4103,10 +4108,10 @@ async function submitLead(auto=false){
    name:(document.getElementById('name').value||chatContext.customer_name||chatContext.waitlist_name||'').trim(),
    phone:(document.getElementById('phone').value||chatContext.customer_phone||chatContext.waitlist_phone||'').trim(),
    email:(document.getElementById('email').value||chatContext.customer_email||chatContext.waitlist_email||'').trim(),
-   zip:document.getElementById('zip').value.trim(),
-   service:document.getElementById('service').value||'General Repair',
-   urgency:document.getElementById('urgency').value||'Normal',
-   message:document.getElementById('details').value
+   zip:(chatContext.customer_zip||chatContext.customer_location||document.getElementById('zip').value||'').trim(),
+   service:chatContext.service||document.getElementById('service').value||'General Repair',
+   urgency:chatContext.urgency||document.getElementById('urgency').value||'Normal',
+   message:chatContext.issue||document.getElementById('details').value||''
  };
 
  const result=document.getElementById('result');
@@ -4141,14 +4146,20 @@ async function submitLead(auto=false){
    setText('confirmTitle',`You're all set, ${firstName}.`);
    setText('confirmText',`${businessName} received your request and will contact you using the information you provided.`);
 
+   const acceptedService=j.service||data.service;
+   const acceptedUrgency=j.urgency||data.urgency;
+   chatContext.service=acceptedService;
+   chatContext.urgency=acceptedUrgency;
+   chatContext.service_locked=acceptedService && acceptedService!=='General Repair';
+
    const location=data.zip||chatContext.customer_location||'';
-   setText('confirmService',data.service);
+   setText('confirmService',acceptedService);
    setText('confirmLocation',location);
-   setText('confirmUrgency',data.urgency);
+   setText('confirmUrgency',acceptedUrgency);
 
    document.getElementById('confirmLocationRow').style.display=location?'flex':'none';
-   document.getElementById('confirmServiceRow').style.display=data.service?'flex':'none';
-   document.getElementById('confirmUrgencyRow').style.display=data.urgency?'flex':'none';
+   document.getElementById('confirmServiceRow').style.display=acceptedService?'flex':'none';
+   document.getElementById('confirmUrgencyRow').style.display=acceptedUrgency?'flex':'none';
 
    document.getElementById('assistantCard').style.display='none';
    document.getElementById('summaryCard').style.display='none';
@@ -4161,7 +4172,11 @@ async function submitLead(auto=false){
      button.disabled=false;
      button.textContent='SEND MY REQUEST →';
    }
-   result.textContent='Something went wrong. Please try again.';
+   if(j && j.message){
+     result.textContent=j.message;
+   }else{
+     result.textContent='Something went wrong. Please try again.';
+   }
  }
 }
 
@@ -5862,10 +5877,12 @@ class Handler(BaseHTTPRequestHandler):
                 con = db()
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
 
-                # Always classify on the server from the customer's actual message.
-                # This prevents blank/default form fields from turning an HVAC,
-                # plumbing, electrical, or roofing lead into "General Repair".
-                message = data.get("message") or ""
+                # LEAD INTEGRITY GATE (V17)
+                # Re-classify from the customer's actual problem text at the final
+                # submission boundary. A confident server classification wins over
+                # stale/mutated browser state. If the text is genuinely ambiguous,
+                # a specific service already collected in chat may be preserved.
+                message = (data.get("message") or "").strip()
                 detected_service, detected_urgency = classify(message)
 
                 supplied_service = (data.get("service") or "").strip()
@@ -5874,8 +5891,49 @@ class Handler(BaseHTTPRequestHandler):
                 valid_services = {"HVAC", "Plumbing", "Electrical", "Roofing", "General Repair"}
                 valid_urgencies = {"Normal", "High", "Emergency"}
 
-                service = supplied_service if supplied_service in valid_services else detected_service
-                urgency = supplied_urgency if supplied_urgency in valid_urgencies else detected_urgency
+                if detected_service in valid_services and detected_service != "General Repair":
+                    service = detected_service
+                elif supplied_service in valid_services:
+                    service = supplied_service
+                else:
+                    service = "General Repair"
+
+                # Urgency is also normalized at the server boundary. Escalation
+                # detected from the problem text takes precedence over a stale
+                # lower client value. We never silently downgrade Emergency/High.
+                urgency_rank = {"Normal": 0, "High": 1, "Emergency": 2}
+                supplied_u = supplied_urgency if supplied_urgency in valid_urgencies else "Normal"
+                detected_u = detected_urgency if detected_urgency in valid_urgencies else "Normal"
+                urgency = detected_u if urgency_rank[detected_u] >= urgency_rank[supplied_u] else supplied_u
+
+                # If this is a contractor-specific page and services are configured,
+                # never accept a clearly different trade. This prevents a Roofing
+                # request from being silently stored as a Plumbing lead (or vice versa).
+                configured_services = [
+                    s.strip().lower()
+                    for s in str(selected_business.get("services") or "").split(",")
+                    if s.strip()
+                ]
+                if configured_services and service != "General Repair":
+                    normalized_service = service.lower()
+                    service_allowed = any(
+                        normalized_service == s
+                        or normalized_service in s
+                        or s in normalized_service
+                        for s in configured_services
+                    )
+                    if not service_allowed:
+                        self.send_bytes(
+                            json.dumps({
+                                "error": "service mismatch",
+                                "message": f"This business is not configured to receive {service} requests.",
+                                "service": service,
+                                "urgency": urgency
+                            }).encode(),
+                            409,
+                            "application/json"
+                        )
+                        return
 
                 qualification = qualify_lead(
                     data.get("name"),
